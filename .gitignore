@@ -1,0 +1,68 @@
+# Ignore everything
+/*
+
+# Allow SQL files at root
+!/*.sql
+
+# Allow wp-content folder
+!wp-content/
+
+# Ignore everything inside wp-content
+wp-content/*
+
+# Allow themes and plugins folders inside wp-content
+!wp-content/themes/
+!wp-content/plugins/
+!wp-content/uploads/
+
+# Allow all files and subfolders inside themes, plugins and uploads
+!wp-content/themes/**/*
+!wp-content/plugins/**/*
+!wp-content/uploads/**/*
+
+# Allow .github (e.g. for GitHub Actions workflows)
+!.github/
+!.github/**
+
+# Always allow this gitignore and readme
+!.gitignore
+!readme.md
+
+# Ignore all dist folders everywhere
+**/dist/
+
+# MacOS metadata
+.DS_Store
+
+# VS Code settings and workspace files
+.vscode/
+*.code-workspace
+
+# Common OS/IDE clutter
+Thumbs.db
+ehthumbs.db
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+
+# Node / build artifacts (if used)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Composer vendor dir (if used)
+vendor/
+
+# Logs / temp files
+*.log
+*.tmp
+*.swp
+*.swo
+*.bak
+
+# Env files (if any)
+.env
+.env.*
