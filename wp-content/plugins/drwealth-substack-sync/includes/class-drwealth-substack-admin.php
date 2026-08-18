@@ -1,8 +1,9 @@
 <?php
 /**
- * Admin UI: Tools > Substack Sync, with two independent tabs — Posts and
- * Subscribers — each with its own upload form, its own admin-post handler,
- * and its own result notice, so the two imports can be run separately.
+ * Admin UI: Tools > Substack Sync, with three independent tabs — Posts,
+ * Subscribers, and Welcome Email — each with its own form(s), its own
+ * admin-post handler(s), and its own result notice, so imports, welcome
+ * emails, and the email template can all be managed separately.
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -11,16 +12,24 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class DrWealth_Substack_Admin {
 
-	const NONCE_ACTION_POSTS       = 'drwealth_substack_import_posts';
-	const NONCE_ACTION_SUBSCRIBERS = 'drwealth_substack_import_subscribers';
+	const NONCE_ACTION_POSTS           = 'drwealth_substack_import_posts';
+	const NONCE_ACTION_SUBSCRIBERS     = 'drwealth_substack_import_subscribers';
+	const NONCE_ACTION_EMAIL_SETTINGS  = 'drwealth_substack_save_email_settings';
+	const NONCE_ACTION_SEND_EMAIL      = 'drwealth_substack_send_welcome_email';
+	const NONCE_ACTION_SEND_BATCH      = 'drwealth_substack_send_welcome_batch';
 
-	const TRANSIENT_POSTS       = 'drwealth_substack_import_posts_result';
-	const TRANSIENT_SUBSCRIBERS = 'drwealth_substack_import_subscribers_result';
+	const TRANSIENT_POSTS          = 'drwealth_substack_import_posts_result';
+	const TRANSIENT_SUBSCRIBERS    = 'drwealth_substack_import_subscribers_result';
+	const TRANSIENT_EMAIL_SETTINGS = 'drwealth_substack_email_settings_result';
+	const TRANSIENT_EMAIL_SEND     = 'drwealth_substack_email_send_result';
 
 	public static function init() {
 		add_action( 'admin_menu', array( __CLASS__, 'add_menu' ) );
 		add_action( 'admin_post_drwealth_substack_import_posts', array( __CLASS__, 'handle_import_posts' ) );
 		add_action( 'admin_post_drwealth_substack_import_subscribers', array( __CLASS__, 'handle_import_subscribers' ) );
+		add_action( 'admin_post_drwealth_substack_save_email_settings', array( __CLASS__, 'handle_save_email_settings' ) );
+		add_action( 'admin_post_drwealth_substack_send_welcome_email', array( __CLASS__, 'handle_send_welcome_email' ) );
+		add_action( 'admin_post_drwealth_substack_send_welcome_batch', array( __CLASS__, 'handle_send_welcome_batch' ) );
 		add_action( 'show_user_profile', array( __CLASS__, 'render_user_profile_fields' ) );
 		add_action( 'edit_user_profile', array( __CLASS__, 'render_user_profile_fields' ) );
 	}
@@ -40,8 +49,9 @@ class DrWealth_Substack_Admin {
 			return;
 		}
 
-		$tab = ( isset( $_GET['tab'] ) && 'subscribers' === $_GET['tab'] ) ? 'subscribers' : 'posts';
-		$base_url = admin_url( 'tools.php?page=drwealth-substack-sync' );
+		$allowed_tabs = array( 'posts', 'subscribers', 'email' );
+		$tab          = ( isset( $_GET['tab'] ) && in_array( $_GET['tab'], $allowed_tabs, true ) ) ? $_GET['tab'] : 'posts';
+		$base_url     = admin_url( 'tools.php?page=drwealth-substack-sync' );
 		?>
 		<div class="wrap">
 			<h1>Substack Sync</h1>
@@ -49,10 +59,13 @@ class DrWealth_Substack_Admin {
 			<h2 class="nav-tab-wrapper">
 				<a href="<?php echo esc_url( add_query_arg( 'tab', 'posts', $base_url ) ); ?>" class="nav-tab <?php echo 'posts' === $tab ? 'nav-tab-active' : ''; ?>">Posts</a>
 				<a href="<?php echo esc_url( add_query_arg( 'tab', 'subscribers', $base_url ) ); ?>" class="nav-tab <?php echo 'subscribers' === $tab ? 'nav-tab-active' : ''; ?>">Subscribers</a>
+				<a href="<?php echo esc_url( add_query_arg( 'tab', 'email', $base_url ) ); ?>" class="nav-tab <?php echo 'email' === $tab ? 'nav-tab-active' : ''; ?>">Welcome Email</a>
 			</h2>
 
 			<?php if ( 'subscribers' === $tab ) : ?>
 				<?php self::render_subscribers_tab(); ?>
+			<?php elseif ( 'email' === $tab ) : ?>
+				<?php self::render_email_tab(); ?>
 			<?php else : ?>
 				<?php self::render_posts_tab(); ?>
 			<?php endif; ?>
@@ -80,6 +93,17 @@ class DrWealth_Substack_Admin {
 					<?php endforeach; ?>
 				</ul>
 			<?php endif; ?>
+		</div>
+		<?php
+	}
+
+	protected static function render_simple_notice( $result ) {
+		if ( ! $result ) {
+			return;
+		}
+		?>
+		<div class="notice notice-<?php echo empty( $result['is_error'] ) ? 'success' : 'error'; ?> is-dismissible">
+			<p><?php echo esc_html( $result['message'] ); ?></p>
 		</div>
 		<?php
 	}
@@ -131,9 +155,13 @@ class DrWealth_Substack_Admin {
 	}
 
 	protected static function render_subscribers_tab() {
-		$result = get_transient( self::TRANSIENT_SUBSCRIBERS );
+		$import_result = get_transient( self::TRANSIENT_SUBSCRIBERS );
 		delete_transient( self::TRANSIENT_SUBSCRIBERS );
-		self::render_result_notice( $result );
+		self::render_result_notice( $import_result );
+
+		$email_result = get_transient( self::TRANSIENT_EMAIL_SEND );
+		delete_transient( self::TRANSIENT_EMAIL_SEND );
+		self::render_simple_notice( $email_result );
 		?>
 		<form method="post" enctype="multipart/form-data" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 			<?php wp_nonce_field( self::NONCE_ACTION_SUBSCRIBERS ); ?>
@@ -164,6 +192,22 @@ class DrWealth_Substack_Admin {
 			</table>
 
 			<?php submit_button( 'Import Subscribers' ); ?>
+		</form>
+
+		<h2>Welcome emails</h2>
+		<p>
+			<?php echo (int) DrWealth_Substack_Mailer::count_pending(); ?> imported subscriber(s) haven't been sent a welcome email yet.
+			Importing/re-importing never sends mail on its own — only the buttons below do, and each subscriber is only ever emailed once
+			this way (use the per-row "Resend" button if you need to email someone again).
+		</p>
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+			<?php wp_nonce_field( self::NONCE_ACTION_SEND_BATCH ); ?>
+			<input type="hidden" name="action" value="drwealth_substack_send_welcome_batch" />
+			<label>
+				Emails to send this run:
+				<input type="number" name="batch_limit" value="20" min="1" max="500" />
+			</label>
+			<?php submit_button( 'Send Batch', 'secondary', 'submit', false ); ?>
 		</form>
 
 		<h2>Imported Substack subscribers</h2>
@@ -236,6 +280,7 @@ class DrWealth_Substack_Admin {
 					<th>Plan</th>
 					<th>Active</th>
 					<th>Combined membership</th>
+					<th>Welcome email</th>
 				</tr>
 			</thead>
 			<tbody>
@@ -249,6 +294,8 @@ class DrWealth_Substack_Admin {
 						$plans[]   = get_user_meta( $user->ID, DrWealth_Substack_Subscriber_Importer::META_PLAN . '_' . $pub, true );
 						$actives[] = get_user_meta( $user->ID, DrWealth_Substack_Subscriber_Importer::META_ACTIVE . '_' . $pub, true );
 					}
+
+					$emailed_at = DrWealth_Substack_Mailer::get_emailed_at( $user->ID );
 					?>
 					<tr>
 						<td><a href="<?php echo esc_url( get_edit_user_link( $user->ID ) ); ?>"><?php echo esc_html( $user->user_email ); ?></a></td>
@@ -256,10 +303,69 @@ class DrWealth_Substack_Admin {
 						<td><?php echo esc_html( implode( ', ', $plans ) ); ?></td>
 						<td><?php echo esc_html( implode( ', ', $actives ) ); ?></td>
 						<td><?php echo esc_html( DrWealth_Substack_Subscriber_Importer::determine_effective_membership( $user->ID ) ); ?></td>
+						<td>
+							<?php if ( $emailed_at ) : ?>
+								Sent <?php echo esc_html( mysql2date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), $emailed_at ) ); ?><br />
+							<?php else : ?>
+								<em>Not sent</em><br />
+							<?php endif; ?>
+							<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline">
+								<?php wp_nonce_field( DrWealth_Substack_Admin::NONCE_ACTION_SEND_EMAIL ); ?>
+								<input type="hidden" name="action" value="drwealth_substack_send_welcome_email" />
+								<input type="hidden" name="user_id" value="<?php echo esc_attr( $user->ID ); ?>" />
+								<button type="submit" class="button button-small"><?php echo $emailed_at ? 'Resend' : 'Send welcome email'; ?></button>
+							</form>
+						</td>
 					</tr>
 				<?php endforeach; ?>
 			</tbody>
 		</table>
+		<?php
+	}
+
+	protected static function render_email_tab() {
+		$result = get_transient( self::TRANSIENT_EMAIL_SETTINGS );
+		delete_transient( self::TRANSIENT_EMAIL_SETTINGS );
+		self::render_simple_notice( $result );
+
+		$subject = DrWealth_Substack_Mailer::get_subject();
+		$body    = DrWealth_Substack_Mailer::get_body();
+		?>
+		<p class="description">
+			This is the "your membership is ready" email — sent from the Subscribers tab, either one at a time or in a batch, never
+			automatically on import. Placeholders available: <code>{first_name}</code>, <code>{display_name}</code>, <code>{email}</code>,
+			<code>{plan}</code>, <code>{expiry}</code>, <code>{expiry_sentence}</code>, <code>{reset_link}</code>, <code>{login_url}</code>,
+			<code>{site_name}</code>.
+		</p>
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+			<?php wp_nonce_field( self::NONCE_ACTION_EMAIL_SETTINGS ); ?>
+			<input type="hidden" name="action" value="drwealth_substack_save_email_settings" />
+
+			<table class="form-table">
+				<tr>
+					<th><label for="drwealth_email_subject">Subject</label></th>
+					<td><input type="text" class="regular-text" name="subject" id="drwealth_email_subject" value="<?php echo esc_attr( $subject ); ?>" /></td>
+				</tr>
+				<tr>
+					<th><label for="drwealth_email_body">Body</label></th>
+					<td>
+						<?php
+						wp_editor(
+							$body,
+							'drwealth_email_body',
+							array(
+								'textarea_name' => 'body',
+								'textarea_rows' => 14,
+								'media_buttons' => false,
+							)
+						);
+						?>
+					</td>
+				</tr>
+			</table>
+
+			<?php submit_button( 'Save Email Template' ); ?>
+		</form>
 		<?php
 	}
 
@@ -369,6 +475,88 @@ class DrWealth_Substack_Admin {
 		}
 
 		self::redirect_with_result( self::TRANSIENT_SUBSCRIBERS, 'tab=subscribers', $result );
+	}
+
+	public static function handle_save_email_settings() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( 'Not allowed.' );
+		}
+
+		check_admin_referer( self::NONCE_ACTION_EMAIL_SETTINGS );
+
+		$subject = isset( $_POST['subject'] ) ? sanitize_text_field( wp_unslash( $_POST['subject'] ) ) : '';
+		$body    = isset( $_POST['body'] ) ? wp_kses_post( wp_unslash( $_POST['body'] ) ) : '';
+
+		DrWealth_Substack_Mailer::save_template( $subject, $body );
+
+		set_transient(
+			self::TRANSIENT_EMAIL_SETTINGS,
+			array(
+				'message'  => 'Email template saved.',
+				'is_error' => false,
+			),
+			5 * MINUTE_IN_SECONDS
+		);
+		wp_safe_redirect( admin_url( 'tools.php?page=drwealth-substack-sync&tab=email' ) );
+		exit;
+	}
+
+	public static function handle_send_welcome_email() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( 'Not allowed.' );
+		}
+
+		check_admin_referer( self::NONCE_ACTION_SEND_EMAIL );
+
+		$user_id = isset( $_POST['user_id'] ) ? (int) $_POST['user_id'] : 0;
+		$sent    = DrWealth_Substack_Mailer::send_to_user( $user_id );
+
+		if ( is_wp_error( $sent ) ) {
+			$message  = 'Could not send: ' . $sent->get_error_message();
+			$is_error = true;
+		} else {
+			$message  = 'Welcome email sent.';
+			$is_error = false;
+		}
+
+		set_transient(
+			self::TRANSIENT_EMAIL_SEND,
+			array(
+				'message'  => $message,
+				'is_error' => $is_error,
+			),
+			5 * MINUTE_IN_SECONDS
+		);
+		wp_safe_redirect( admin_url( 'tools.php?page=drwealth-substack-sync&tab=subscribers' ) );
+		exit;
+	}
+
+	public static function handle_send_welcome_batch() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( 'Not allowed.' );
+		}
+
+		check_admin_referer( self::NONCE_ACTION_SEND_BATCH );
+
+		$limit  = isset( $_POST['batch_limit'] ) ? (int) $_POST['batch_limit'] : 20;
+		$result = DrWealth_Substack_Mailer::send_batch( $limit );
+
+		$message = sprintf( 'Sent %d welcome email(s).', $result['sent'] );
+
+		if ( ! empty( $result['errors'] ) ) {
+			$message .= ' ' . count( $result['errors'] ) . ' error(s): ' . implode( '; ', $result['errors'] );
+		}
+
+		set_transient(
+			self::TRANSIENT_EMAIL_SEND,
+			array(
+				'message'  => $message,
+				'is_error' => ! empty( $result['errors'] ),
+			),
+			5 * MINUTE_IN_SECONDS
+		);
+		wp_safe_redirect( admin_url( 'tools.php?page=drwealth-substack-sync&tab=subscribers' ) );
+		exit;
 	}
 
 	/**

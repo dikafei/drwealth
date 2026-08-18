@@ -17,6 +17,7 @@ define( 'DRWEALTH_SUBSTACK_SYNC_DIR', plugin_dir_path( __FILE__ ) );
 require_once DRWEALTH_SUBSTACK_SYNC_DIR . 'includes/class-drwealth-substack-zip-helper.php';
 require_once DRWEALTH_SUBSTACK_SYNC_DIR . 'includes/class-drwealth-substack-importer.php';
 require_once DRWEALTH_SUBSTACK_SYNC_DIR . 'includes/class-drwealth-substack-subscriber-importer.php';
+require_once DRWEALTH_SUBSTACK_SYNC_DIR . 'includes/class-drwealth-substack-mailer.php';
 require_once DRWEALTH_SUBSTACK_SYNC_DIR . 'includes/class-drwealth-substack-admin.php';
 
 add_action( 'plugins_loaded', array( 'DrWealth_Substack_Admin', 'init' ) );

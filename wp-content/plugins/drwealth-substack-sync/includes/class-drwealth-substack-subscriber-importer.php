@@ -99,14 +99,11 @@ class DrWealth_Substack_Subscriber_Importer {
 		$publication_key = self::detect_publication_from_filename( $csv_path );
 		$rows            = DrWealth_Substack_Zip_Helper::parse_csv( $csv_path );
 
-		// Most recently created subscribers first.
-		usort(
-			$rows,
-			function ( $a, $b ) {
-				return strcmp( isset( $b['created_at'] ) ? $b['created_at'] : '', isset( $a['created_at'] ) ? $a['created_at'] : '' );
-			}
-		);
-
+		// Take rows in the order they appear in the CSV — top to bottom —
+		// rather than re-sorting by created_at. The export's own row order
+		// isn't guaranteed to be chronological, and re-sorting also made the
+		// importer fragile to date-format changes (e.g. a file re-saved in
+		// Excel). "Limit" means the first N rows of the file, full stop.
 		$limit = max( 1, min( 1000, (int) $limit ) );
 		$rows  = array_slice( $rows, 0, $limit );
 
@@ -175,7 +172,11 @@ class DrWealth_Substack_Subscriber_Importer {
 			}
 		}
 
-		$is_active = isset( $row['active_subscription'] ) && 'true' === $row['active_subscription'];
+		// Case-insensitive: Substack itself exports lowercase "true"/"false",
+		// but a file that's been opened and re-saved in Excel/Sheets often
+		// comes back as "TRUE"/"FALSE", which would otherwise silently
+		// classify every subscriber in the file as inactive/Free.
+		$is_active = isset( $row['active_subscription'] ) && 'true' === strtolower( trim( $row['active_subscription'] ) );
 		$plan_raw  = isset( $row['plan'] ) ? $row['plan'] : '';
 
 		update_user_meta( $user_id, self::META_ACTIVE . '_' . $publication_key, $is_active ? 'true' : 'false' );
@@ -190,7 +191,7 @@ class DrWealth_Substack_Subscriber_Importer {
 		// Lifetime if the export's plan is "lifetime", Premium for any other
 		// active subscription (yearly, monthly, comp, or "other" — not yet
 		// differentiated), Free if inactive.
-		if ( $is_active && 'lifetime' === $plan_raw ) {
+		if ( $is_active && 'lifetime' === strtolower( trim( $plan_raw ) ) ) {
 			$tier = self::MEMBERSHIP_PLAN_PREMIUM_LIFETIME_SLUG;
 		} elseif ( $is_active ) {
 			$tier = self::MEMBERSHIP_PLAN_PREMIUM_SLUG;
@@ -205,9 +206,9 @@ class DrWealth_Substack_Subscriber_Importer {
 		// Both Substacks feed into the same WordPress site, so if this
 		// person exists under more than one publication, they get whichever
 		// plan is highest across all of them — not just this publication's.
-		$effective_slug = self::determine_effective_membership( $user_id );
+		$effective = self::get_effective_membership_info( $user_id );
 
-		self::ensure_membership( $user_id, $effective_slug );
+		self::ensure_membership( $user_id, $effective['slug'], self::to_local_mysql( $effective['expiry'] ) );
 
 		return $is_new ? 'created' : 'updated';
 	}
@@ -217,25 +218,101 @@ class DrWealth_Substack_Subscriber_Importer {
 	 * across every publication they've been imported from.
 	 */
 	public static function determine_effective_membership( $user_id ) {
+		$info = self::get_effective_membership_info( $user_id );
+
+		return $info['slug'];
+	}
+
+	/**
+	 * Same as determine_effective_membership(), but also returns which
+	 * publication's data is behind that tier, plus that publication's raw
+	 * `plan` and `expiry` — used by the welcome email to say something
+	 * meaningful about "your plan and expiry date".
+	 *
+	 * Tier always wins first (free < premium < premium-lifetime). Within the
+	 * same tier — e.g. one publication says "premium-membership" from a
+	 * monthly plan and another says "premium-membership" from a yearly plan
+	 * — the one with the furthest-out expiry wins, so a longer plan is never
+	 * shadowed by a shorter one just because it happened to be tracked
+	 * first.
+	 *
+	 * @return array{slug: string, publication: string, plan_raw: string, expiry: string}
+	 */
+	public static function get_effective_membership_info( $user_id ) {
 		$rank = array(
 			self::MEMBERSHIP_PLAN_FREE_SLUG             => 0,
 			self::MEMBERSHIP_PLAN_PREMIUM_SLUG          => 1,
 			self::MEMBERSHIP_PLAN_PREMIUM_LIFETIME_SLUG => 2,
 		);
 
-		$best_slug = self::MEMBERSHIP_PLAN_FREE_SLUG;
-		$best_rank = 0;
+		$best = array(
+			'slug'        => self::MEMBERSHIP_PLAN_FREE_SLUG,
+			'publication' => '',
+		);
+		$best_rank      = -1;
+		$best_expiry_ts = false;
 
 		foreach ( self::get_tracked_publications( $user_id ) as $publication_key ) {
 			$slug = get_user_meta( $user_id, self::META_MEMBERSHIP . '_' . $publication_key, true );
 
-			if ( isset( $rank[ $slug ] ) && $rank[ $slug ] > $best_rank ) {
-				$best_rank = $rank[ $slug ];
-				$best_slug = $slug;
+			if ( ! isset( $rank[ $slug ] ) ) {
+				continue;
+			}
+
+			$candidate_rank      = $rank[ $slug ];
+			$candidate_expiry_ts = self::expiry_timestamp( $user_id, $publication_key );
+
+			$wins = false;
+
+			if ( $candidate_rank > $best_rank ) {
+				$wins = true;
+			} elseif ( $candidate_rank === $best_rank ) {
+				// Tie within the same tier: prefer whichever has a real
+				// expiry date further in the future. If the current best
+				// has no usable expiry at all, any candidate with one wins.
+				if ( $candidate_expiry_ts && ( ! $best_expiry_ts || $candidate_expiry_ts > $best_expiry_ts ) ) {
+					$wins = true;
+				}
+			}
+
+			if ( $wins ) {
+				$best_rank      = $candidate_rank;
+				$best_expiry_ts = $candidate_expiry_ts;
+				$best           = array(
+					'slug'        => $slug,
+					'publication' => $publication_key,
+				);
 			}
 		}
 
-		return $best_slug;
+		$best['plan_raw'] = $best['publication'] ? get_user_meta( $user_id, self::META_PLAN . '_' . $best['publication'], true ) : '';
+		$best['expiry']   = $best['publication'] ? get_user_meta( $user_id, self::META_EXPIRY . '_' . $best['publication'], true ) : '';
+
+		return $best;
+	}
+
+	/**
+	 * Human-readable label for a membership plan slug, for use in the UI
+	 * and in the welcome email.
+	 */
+	public static function get_plan_label( $slug ) {
+		$labels = array(
+			self::MEMBERSHIP_PLAN_PREMIUM_LIFETIME_SLUG => 'Premium Lifetime Membership',
+			self::MEMBERSHIP_PLAN_PREMIUM_SLUG          => 'Premium Membership',
+			self::MEMBERSHIP_PLAN_FREE_SLUG             => 'Free Membership',
+		);
+
+		return isset( $labels[ $slug ] ) ? $labels[ $slug ] : $slug;
+	}
+
+	/**
+	 * Parsed expiry timestamp for a user's given publication, or false if
+	 * missing/unparseable.
+	 */
+	protected static function expiry_timestamp( $user_id, $publication_key ) {
+		$raw = get_user_meta( $user_id, self::META_EXPIRY . '_' . $publication_key, true );
+
+		return $raw ? strtotime( $raw ) : false;
 	}
 
 	/**
@@ -299,8 +376,19 @@ class DrWealth_Substack_Subscriber_Importer {
 	 * Make sure the user holds an active membership in the given plan
 	 * (by slug), creating one if they don't already have it. Existing
 	 * memberships in other plans are left untouched.
+	 *
+	 * These memberships are granted directly (not through a subscription
+	 * product purchase), so nothing else on the site will ever expire them.
+	 * $end_date fills that gap by setting the membership's own expiration to
+	 * match Substack's, and is kept in sync on every re-import (so a renewal
+	 * on Substack pushes the WooCommerce expiry out too). Pass '' for plans
+	 * that shouldn't expire (lifetime) or when there's no usable expiry data.
+	 *
+	 * @param int    $user_id   WordPress user ID.
+	 * @param string $plan_slug Membership plan slug.
+	 * @param string $end_date  Site-local MySQL datetime, or '' to leave/clear it.
 	 */
-	protected static function ensure_membership( $user_id, $plan_slug ) {
+	protected static function ensure_membership( $user_id, $plan_slug, $end_date = '' ) {
 		if ( ! self::memberships_available() ) {
 			return;
 		}
@@ -314,18 +402,43 @@ class DrWealth_Substack_Subscriber_Importer {
 		$membership = wc_memberships_get_user_membership( $user_id, $plan->get_id() );
 
 		if ( ! $membership ) {
-			wc_memberships_create_user_membership(
+			$membership = wc_memberships_create_user_membership(
 				array(
 					'user_id' => $user_id,
 					'plan_id' => $plan->get_id(),
 				)
 			);
+		} elseif ( 'active' !== $membership->get_status() ) {
+			$membership->update_status( 'active' );
+		}
+
+		// wc_memberships_create_user_membership() is documented to return the
+		// new WC_Memberships_User_Membership, but fall back to a fresh lookup
+		// in case a given version returns something else (e.g. a post ID).
+		if ( ! ( $membership instanceof WC_Memberships_User_Membership ) ) {
+			$membership = wc_memberships_get_user_membership( $user_id, $plan->get_id() );
+		}
+
+		if ( ! ( $membership instanceof WC_Memberships_User_Membership ) ) {
 			return;
 		}
 
-		if ( 'active' !== $membership->get_status() ) {
-			$membership->update_status( 'active' );
+		if ( self::MEMBERSHIP_PLAN_PREMIUM_LIFETIME_SLUG === $plan_slug ) {
+			$membership->set_end_date( '' ); // Lifetime never expires.
+		} elseif ( $end_date ) {
+			$membership->set_end_date( $end_date );
 		}
+	}
+
+	/**
+	 * Convert a Substack ISO-8601 datetime (UTC) into a site-local MySQL
+	 * datetime, for setting a WooCommerce membership's end date. Returns ''
+	 * if the source value is missing or unparseable.
+	 */
+	protected static function to_local_mysql( $iso_date ) {
+		$timestamp = $iso_date ? strtotime( $iso_date ) : false;
+
+		return $timestamp ? get_date_from_gmt( gmdate( 'Y-m-d H:i:s', $timestamp ) ) : '';
 	}
 
 	protected static function memberships_available() {

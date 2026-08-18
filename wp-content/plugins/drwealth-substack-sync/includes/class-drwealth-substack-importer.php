@@ -89,18 +89,13 @@ class DrWealth_Substack_Importer {
 		$posts_dir = trailingslashit( dirname( $csv_path ) ) . 'posts';
 		$rows      = DrWealth_Substack_Zip_Helper::parse_csv( $csv_path );
 
-		// Only published newsletter posts, most recent first.
+		// Only published newsletter posts. Rows are kept in the order they
+		// appear in posts.csv (top to bottom) rather than re-sorted by
+		// post_date — "limit" means the first N published rows of the file.
 		$rows = array_filter(
 			$rows,
 			function ( $row ) {
 				return isset( $row['is_published'] ) && 'true' === $row['is_published'];
-			}
-		);
-
-		usort(
-			$rows,
-			function ( $a, $b ) {
-				return strcmp( $b['post_date'], $a['post_date'] );
 			}
 		);
 
