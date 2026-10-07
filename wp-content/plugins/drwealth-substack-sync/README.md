@@ -1,6 +1,6 @@
-# DrWealth Substack Sync
+# DrWealth Member Tools (Substack migration + site emails)
 
-Imports Substack exports (posts and subscribers) into WordPress, and sends imported subscribers a welcome email. Go to **Tools > Substack Sync**, which has three independent tabs — **Posts**, **Subscribers**, and **Welcome Email** — each with its own form(s), so imports and welcome emails can be run separately, on their own schedule.
+Imports Substack exports (posts and subscribers) into WordPress, and sends imported subscribers a welcome email. Go to **Tools > Member Tools**, which has four independent tabs — **Posts**, **Subscribers**, **Migration Email** (the Free/Paid move emails) and **Site Emails** (free signup + Premium signup emails) — each with its own form(s), so imports and welcome emails can be run separately, on their own schedule.
 
 Both tabs accept the same kind of Substack export `.zip` (Settings > Exports in Substack); each tab just reads the file inside it that it cares about (`posts.csv` + `posts/*.html`, or `email_list*.csv`).
 
@@ -14,10 +14,12 @@ For each of those rows, the plugin:
 
 - Finds the matching post HTML in `posts/<post_id>.html` and uses it as the post content (Substack's "Subscribe now" button and paywall marker are stripped since gating happens in WordPress, not in the content).
 - Sets the post title and publish date from the export.
+- Sets the post **author** to the user chosen in the Author dropdown on the form (the export has no author field; the choice is remembered). Without this, WordPress would credit whoever ran the import.
+- Adds a **publication category** — `Finbite Insights` (slug `finbite-insights`) or `Growth Dragons` (slug `growth-dragons`) — created automatically if it doesn't exist yet.
 - Assigns categories using the site's existing taxonomy (no new categories are created):
   - **Market**: the existing `United States` category (slug `us`) for Finbite Insights, or `China` (slug `cn`) for Growth Dragons.
   - **Paid gating**: the existing `Premium` category (slug `premium`), only for posts where the export's `audience` is `only_paid`. Free (`everyone`) posts get the market category only.
-- Sets a featured image from the first image found in the post, if any.
+- Downloads **every image** in the post into the Media Library and rewrites the content to use the local copies (no hot-linking Substack/CDN). Each source image is downloaded once and reused on re-import; the first image becomes the featured image.
 - Stores the Substack post ID as post meta (`_drwealth_substack_post_id`, scoped per publication), so re-importing **overwrites** the matching post instead of duplicating it.
 
 ## Subscribers tab
@@ -49,7 +51,9 @@ On a user's profile screen (Users > [name]), admins see a **Substack Sync** sect
 
 ## Welcome Email tab
 
-Editable subject + rich-text body for the email sent to imported subscribers. Placeholders: `{first_name}`, `{display_name}`, `{email}`, `{plan}`, `{expiry}`, `{expiry_sentence}`, `{reset_link}`, `{login_url}`, `{site_name}`. Defaults cover the two required pieces of content — a password-reset link (WordPress's own reset flow, same as "lost password") and a plan/expiry notice built from the subscriber's combined membership info.
+The migration email, in two versions: **Free** (people who end up on the Free plan) and **Paid** (anyone on a paid plan). Each has an editable subject and rich-text body. Placeholders: `{first_name}`, `{display_name}`, `{email}`, `{plan}`, `{expiry}`, `{expiry_sentence}`, `{reset_link}`, `{login_url}`, `{subscription_url}`, `{site_name}`. Defaults are the client-approved copy, with a password-setup link (WordPress's own reset flow).
+
+The Paid email ships with an `[Insert confirmed renewal price, renewal date ...]` line. **Sending is blocked** (per row and batch) until that line is replaced, so it can't go out unfilled.
 
 Sending is completely separate from importing — no email ever goes out as a side effect of the Posts or Subscribers import. It only happens from the Subscribers tab, two ways:
 

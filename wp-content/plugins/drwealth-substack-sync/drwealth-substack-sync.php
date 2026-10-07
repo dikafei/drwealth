@@ -1,7 +1,7 @@
 <?php
 /**
- * Plugin Name: DrWealth Substack Sync
- * Description: Imports Substack post exports (Finbite Insights, Growth Dragons) into WordPress posts, tagged by market and membership category.
+ * Plugin Name: DrWealth Member Tools
+ * Description: Substack migration (posts, subscribers, migration email) plus the site's signup and Premium emails, in one place.
  * Version: 0.1.0
  * Author: DrWealth
  * Text Domain: drwealth-substack-sync
@@ -18,6 +18,7 @@ require_once DRWEALTH_SUBSTACK_SYNC_DIR . 'includes/class-drwealth-substack-zip-
 require_once DRWEALTH_SUBSTACK_SYNC_DIR . 'includes/class-drwealth-substack-importer.php';
 require_once DRWEALTH_SUBSTACK_SYNC_DIR . 'includes/class-drwealth-substack-subscriber-importer.php';
 require_once DRWEALTH_SUBSTACK_SYNC_DIR . 'includes/class-drwealth-substack-mailer.php';
+require_once DRWEALTH_SUBSTACK_SYNC_DIR . 'includes/emails.php';
 require_once DRWEALTH_SUBSTACK_SYNC_DIR . 'includes/class-drwealth-substack-admin.php';
 
 add_action( 'plugins_loaded', array( 'DrWealth_Substack_Admin', 'init' ) );

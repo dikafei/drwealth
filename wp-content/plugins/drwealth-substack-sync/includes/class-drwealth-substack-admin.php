@@ -27,6 +27,7 @@ class DrWealth_Substack_Admin {
 		add_action( 'admin_menu', array( __CLASS__, 'add_menu' ) );
 		add_action( 'admin_post_drwealth_substack_import_posts', array( __CLASS__, 'handle_import_posts' ) );
 		add_action( 'admin_post_drwealth_substack_import_subscribers', array( __CLASS__, 'handle_import_subscribers' ) );
+		add_action( 'admin_post_drwealth_send_test', array( __CLASS__, 'handle_send_test' ) );
 		add_action( 'admin_post_drwealth_substack_save_email_settings', array( __CLASS__, 'handle_save_email_settings' ) );
 		add_action( 'admin_post_drwealth_substack_send_welcome_email', array( __CLASS__, 'handle_send_welcome_email' ) );
 		add_action( 'admin_post_drwealth_substack_send_welcome_batch', array( __CLASS__, 'handle_send_welcome_batch' ) );
@@ -36,8 +37,8 @@ class DrWealth_Substack_Admin {
 
 	public static function add_menu() {
 		add_management_page(
-			'Substack Sync',
-			'Substack Sync',
+			'Member Tools',
+			'Member Tools',
 			'manage_options',
 			'drwealth-substack-sync',
 			array( __CLASS__, 'render_page' )
@@ -49,23 +50,34 @@ class DrWealth_Substack_Admin {
 			return;
 		}
 
-		$allowed_tabs = array( 'posts', 'subscribers', 'email' );
+		$allowed_tabs = array( 'posts', 'subscribers', 'email', 'site-emails', 'sender' );
 		$tab          = ( isset( $_GET['tab'] ) && in_array( $_GET['tab'], $allowed_tabs, true ) ) ? $_GET['tab'] : 'posts';
 		$base_url     = admin_url( 'tools.php?page=drwealth-substack-sync' );
 		?>
 		<div class="wrap">
-			<h1>Substack Sync</h1>
+			<h1>Member Tools</h1>
 
 			<h2 class="nav-tab-wrapper">
 				<a href="<?php echo esc_url( add_query_arg( 'tab', 'posts', $base_url ) ); ?>" class="nav-tab <?php echo 'posts' === $tab ? 'nav-tab-active' : ''; ?>">Posts</a>
 				<a href="<?php echo esc_url( add_query_arg( 'tab', 'subscribers', $base_url ) ); ?>" class="nav-tab <?php echo 'subscribers' === $tab ? 'nav-tab-active' : ''; ?>">Subscribers</a>
-				<a href="<?php echo esc_url( add_query_arg( 'tab', 'email', $base_url ) ); ?>" class="nav-tab <?php echo 'email' === $tab ? 'nav-tab-active' : ''; ?>">Welcome Email</a>
+				<a href="<?php echo esc_url( add_query_arg( 'tab', 'email', $base_url ) ); ?>" class="nav-tab <?php echo 'email' === $tab ? 'nav-tab-active' : ''; ?>">Migration Email</a>
+				<a href="<?php echo esc_url( add_query_arg( 'tab', 'site-emails', $base_url ) ); ?>" class="nav-tab <?php echo 'site-emails' === $tab ? 'nav-tab-active' : ''; ?>">Site Emails</a>
+				<a href="<?php echo esc_url( add_query_arg( 'tab', 'sender', $base_url ) ); ?>" class="nav-tab <?php echo 'sender' === $tab ? 'nav-tab-active' : ''; ?>">Sender</a>
 			</h2>
 
 			<?php if ( 'subscribers' === $tab ) : ?>
 				<?php self::render_subscribers_tab(); ?>
 			<?php elseif ( 'email' === $tab ) : ?>
 				<?php self::render_email_tab(); ?>
+			<?php elseif ( 'site-emails' === $tab ) : ?>
+				<?php
+				$notice = get_transient( self::TRANSIENT_EMAIL_SETTINGS );
+				delete_transient( self::TRANSIENT_EMAIL_SETTINGS );
+				self::render_simple_notice( $notice );
+				?>
+				<?php drwealth_emails_render_settings(); ?>
+			<?php elseif ( 'sender' === $tab ) : ?>
+				<?php drwealth_emails_render_sender(); ?>
 			<?php else : ?>
 				<?php self::render_posts_tab(); ?>
 			<?php endif; ?>
@@ -134,6 +146,24 @@ class DrWealth_Substack_Admin {
 					</td>
 				</tr>
 				<tr>
+					<th><label for="drwealth_author">Author</label></th>
+					<td>
+						<?php
+						wp_dropdown_users(
+							array(
+								'name'             => 'author_id',
+								'id'               => 'drwealth_author',
+								'selected'         => (int) get_option( 'drwealth_substack_author_id', 0 ),
+								'show_option_none' => '— Select author —',
+								'option_none_value' => 0,
+								'capability'       => array( 'edit_posts' ),
+							)
+						);
+						?>
+						<p class="description">The Substack export has no author field, so every imported post is assigned to this user. Re-importing overwrites the author too.</p>
+					</td>
+				</tr>
+				<tr>
 					<th><label for="drwealth_zip">Substack export (.zip)</label></th>
 					<td><input type="file" name="substack_zip" id="drwealth_zip" accept=".zip" required /></td>
 				</tr>
@@ -141,7 +171,7 @@ class DrWealth_Substack_Admin {
 					<th><label for="drwealth_limit">Number of posts to import</label></th>
 					<td>
 						<input type="number" name="limit" id="drwealth_limit" value="10" min="1" max="500" />
-						<p class="description">Most recent published posts, by date. Re-importing the same posts overwrites them instead of duplicating them.</p>
+						<p class="description">First N published posts in the file, top to bottom. Re-importing the same posts overwrites them instead of duplicating them.</p>
 					</td>
 				</tr>
 			</table>
@@ -328,44 +358,51 @@ class DrWealth_Substack_Admin {
 		delete_transient( self::TRANSIENT_EMAIL_SETTINGS );
 		self::render_simple_notice( $result );
 
-		$subject = DrWealth_Substack_Mailer::get_subject();
-		$body    = DrWealth_Substack_Mailer::get_body();
+		$variants = array(
+			DrWealth_Substack_Mailer::VARIANT_FREE => 'Free members email',
+			DrWealth_Substack_Mailer::VARIANT_PAID => 'Paid members email',
+		);
 		?>
 		<p class="description">
-			This is the "your membership is ready" email — sent from the Subscribers tab, either one at a time or in a batch, never
-			automatically on import. Placeholders available: <code>{first_name}</code>, <code>{display_name}</code>, <code>{email}</code>,
-			<code>{plan}</code>, <code>{expiry}</code>, <code>{expiry_sentence}</code>, <code>{reset_link}</code>, <code>{login_url}</code>,
-			<code>{site_name}</code>.
+			The migration email — sent from the Subscribers tab, either one at a time or in a batch, never automatically on import.
+			Each person gets the <strong>Free</strong> or <strong>Paid</strong> version depending on the plan they end up on.
+			Placeholders: <code>{first_name}</code>, <code>{display_name}</code>, <code>{email}</code>,
+			<code>{plan}</code>, <code>{expiry}</code>, <code>{reset_link}</code>, <code>{login_url}</code>,
+			<code>{subscription_url}</code>, <code>{sender_email}</code>, <code>{free_unlocks}</code>, <code>{unlock_period}</code>, <code>{site_name}</code>.
 		</p>
 		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 			<?php wp_nonce_field( self::NONCE_ACTION_EMAIL_SETTINGS ); ?>
 			<input type="hidden" name="action" value="drwealth_substack_save_email_settings" />
 
-			<table class="form-table">
-				<tr>
-					<th><label for="drwealth_email_subject">Subject</label></th>
-					<td><input type="text" class="regular-text" name="subject" id="drwealth_email_subject" value="<?php echo esc_attr( $subject ); ?>" /></td>
-				</tr>
-				<tr>
-					<th><label for="drwealth_email_body">Body</label></th>
-					<td>
-						<?php
-						wp_editor(
-							$body,
-							'drwealth_email_body',
-							array(
-								'textarea_name' => 'body',
-								'textarea_rows' => 14,
-								'media_buttons' => false,
-							)
-						);
-						?>
-					</td>
-				</tr>
-			</table>
+			<?php foreach ( $variants as $variant => $heading ) : ?>
+				<h2><?php echo esc_html( $heading ); ?></h2>
+				<table class="form-table">
+					<tr>
+						<th><label for="drwealth_email_subject_<?php echo esc_attr( $variant ); ?>">Subject</label></th>
+						<td><input type="text" class="large-text" name="subject_<?php echo esc_attr( $variant ); ?>" id="drwealth_email_subject_<?php echo esc_attr( $variant ); ?>" value="<?php echo esc_attr( DrWealth_Substack_Mailer::get_subject( $variant ) ); ?>" /></td>
+					</tr>
+					<tr>
+						<th><label>Body</label></th>
+						<td>
+							<?php
+							wp_editor(
+								DrWealth_Substack_Mailer::get_body( $variant ),
+								'drwealth_email_body_' . $variant,
+								array(
+									'textarea_name' => 'body_' . $variant,
+									'textarea_rows' => 16,
+									'media_buttons' => false,
+								)
+							);
+							?>
+						</td>
+					</tr>
+				</table>
+			<?php endforeach; ?>
 
-			<?php submit_button( 'Save Email Template' ); ?>
+			<?php submit_button( 'Save Email Templates' ); ?>
 		</form>
+		<?php drwealth_emails_render_test_form( array( 'migration_free' => 'Send test: Free email', 'migration_paid' => 'Send test: Paid email' ), 'email' ); ?>
 		<?php
 	}
 
@@ -419,6 +456,12 @@ class DrWealth_Substack_Admin {
 
 		$publication = isset( $_POST['publication'] ) ? sanitize_key( wp_unslash( $_POST['publication'] ) ) : '';
 		$limit       = isset( $_POST['limit'] ) ? (int) $_POST['limit'] : 10;
+		$author_id   = isset( $_POST['author_id'] ) ? (int) $_POST['author_id'] : 0;
+
+		// Remember the choice for next time.
+		if ( $author_id > 0 ) {
+			update_option( 'drwealth_substack_author_id', $author_id );
+		}
 
 		$uploaded = self::handle_upload( 'substack_zip' );
 
@@ -435,7 +478,7 @@ class DrWealth_Substack_Admin {
 			);
 		}
 
-		$result = DrWealth_Substack_Importer::import_zip( $uploaded, $publication, $limit );
+		$result = DrWealth_Substack_Importer::import_zip( $uploaded, $publication, $limit, $author_id );
 
 		if ( file_exists( $uploaded ) ) {
 			wp_delete_file( $uploaded );
@@ -477,6 +520,41 @@ class DrWealth_Substack_Admin {
 		self::redirect_with_result( self::TRANSIENT_SUBSCRIBERS, 'tab=subscribers', $result );
 	}
 
+	public static function handle_send_test() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( 'Not allowed.' );
+		}
+
+		check_admin_referer( 'drwealth_send_test' );
+
+		$type = isset( $_POST['test_type'] ) ? sanitize_key( wp_unslash( $_POST['test_type'] ) ) : '';
+		$tab  = ( isset( $_POST['return_tab'] ) && 'site-emails' === $_POST['return_tab'] ) ? 'site-emails' : 'email';
+		$user = wp_get_current_user();
+
+		if ( 'migration_free' === $type || 'migration_paid' === $type ) {
+			$sent = DrWealth_Substack_Mailer::send_test( 'migration_free' === $type ? DrWealth_Substack_Mailer::VARIANT_FREE : DrWealth_Substack_Mailer::VARIANT_PAID, $user );
+			$ok   = ! is_wp_error( $sent );
+			$msg  = $ok ? '' : $sent->get_error_message();
+		} elseif ( 'signup' === $type || 'premium' === $type ) {
+			$ok  = drwealth_emails_send_test( $type, $user );
+			$msg = $ok ? '' : 'wp_mail() reported failure.';
+		} else {
+			$ok  = false;
+			$msg = 'Unknown test type.';
+		}
+
+		set_transient(
+			self::TRANSIENT_EMAIL_SETTINGS,
+			array(
+				'message'  => $ok ? 'Test email sent to ' . $user->user_email . '.' : 'Test email failed: ' . $msg,
+				'is_error' => ! $ok,
+			),
+			5 * MINUTE_IN_SECONDS
+		);
+		wp_safe_redirect( admin_url( 'tools.php?page=drwealth-substack-sync&tab=' . $tab ) );
+		exit;
+	}
+
 	public static function handle_save_email_settings() {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			wp_die( 'Not allowed.' );
@@ -484,10 +562,12 @@ class DrWealth_Substack_Admin {
 
 		check_admin_referer( self::NONCE_ACTION_EMAIL_SETTINGS );
 
-		$subject = isset( $_POST['subject'] ) ? sanitize_text_field( wp_unslash( $_POST['subject'] ) ) : '';
-		$body    = isset( $_POST['body'] ) ? wp_kses_post( wp_unslash( $_POST['body'] ) ) : '';
+		foreach ( array( DrWealth_Substack_Mailer::VARIANT_FREE, DrWealth_Substack_Mailer::VARIANT_PAID ) as $variant ) {
+			$subject = isset( $_POST[ 'subject_' . $variant ] ) ? sanitize_text_field( wp_unslash( $_POST[ 'subject_' . $variant ] ) ) : '';
+			$body    = isset( $_POST[ 'body_' . $variant ] ) ? wp_kses_post( wp_unslash( $_POST[ 'body_' . $variant ] ) ) : '';
 
-		DrWealth_Substack_Mailer::save_template( $subject, $body );
+			DrWealth_Substack_Mailer::save_template( $variant, $subject, $body );
+		}
 
 		set_transient(
 			self::TRANSIENT_EMAIL_SETTINGS,

@@ -20,11 +20,13 @@ class DrWealth_Substack_Importer {
 			'label'                => 'Finbite Insights',
 			'market_category_name' => 'United States',
 			'market_category_slug' => 'us',
+			'brand_category_slug'  => 'finbite-insights',
 		),
 		'growthdragons'   => array(
 			'label'                => 'Growth Dragons',
 			'market_category_name' => 'China',
 			'market_category_slug' => 'cn',
+			'brand_category_slug'  => 'growth-dragons',
 		),
 	);
 
@@ -54,7 +56,7 @@ class DrWealth_Substack_Importer {
 	 *     @type array $errors  Human-readable error strings.
 	 * }
 	 */
-	public static function import_zip( $zip_path, $publication_key, $limit = 10 ) {
+	public static function import_zip( $zip_path, $publication_key, $limit = 10, $author_id = 0 ) {
 
 		$result = array(
 			'created' => 0,
@@ -103,7 +105,7 @@ class DrWealth_Substack_Importer {
 		$rows  = array_slice( $rows, 0, $limit );
 
 		foreach ( $rows as $row ) {
-			$outcome = self::import_row( $row, $publication_key, $posts_dir );
+			$outcome = self::import_row( $row, $publication_key, $posts_dir, (int) $author_id );
 
 			if ( is_wp_error( $outcome ) ) {
 				$result['errors'][] = $row['post_id'] . ': ' . $outcome->get_error_message();
@@ -129,7 +131,7 @@ class DrWealth_Substack_Importer {
 	 *
 	 * @return string|WP_Error 'created', 'updated', 'skipped', or a WP_Error on failure.
 	 */
-	protected static function import_row( array $row, $publication_key, $posts_dir ) {
+	protected static function import_row( array $row, $publication_key, $posts_dir, $author_id = 0 ) {
 
 		$substack_id = trim( isset( $row['post_id'] ) ? $row['post_id'] : '' );
 
@@ -152,6 +154,9 @@ class DrWealth_Substack_Importer {
 
 		$category_ids = array(
 			self::get_or_create_category( $pub_data['market_category_name'], $pub_data['market_category_slug'] ),
+			// Publication name as a category (Finbite Insights / Growth Dragons),
+			// so readers can see which publication a Premium post comes from.
+			self::get_or_create_category( $pub_data['label'], $pub_data['brand_category_slug'] ),
 		);
 
 		if ( 'only_paid' === $audience_key ) {
@@ -174,6 +179,12 @@ class DrWealth_Substack_Importer {
 			'post_date_gmt' => $post_date_gmt,
 		);
 
+		// The Substack export has no author field, so the author is chosen on
+		// the import form. Without this WordPress would use whoever is logged in.
+		if ( $author_id > 0 && get_userdata( $author_id ) ) {
+			$postarr['post_author'] = $author_id;
+		}
+
 		if ( $existing_id ) {
 			$postarr['ID'] = $existing_id;
 			$new_id        = wp_update_post( $postarr, true );
@@ -194,11 +205,225 @@ class DrWealth_Substack_Importer {
 		update_post_meta( $new_id, self::META_AUDIENCE, $audience_key );
 		update_post_meta( $new_id, self::META_SOURCE_URL, self::source_url( $publication_key, $substack_id ) );
 
+		// Pull every image into the Media Library and point the post content at
+		// the local copies (instead of hot-linking Substack's servers).
+		$localized = self::localize_images( $content, $new_id );
+
+		if ( $localized['content'] !== $content ) {
+			wp_update_post(
+				array(
+					'ID'           => $new_id,
+					'post_content' => $localized['content'],
+				)
+			);
+		}
+
 		if ( ! has_post_thumbnail( $new_id ) ) {
-			self::maybe_set_featured_image( $new_id, $raw_html );
+			if ( $localized['first_id'] ) {
+				set_post_thumbnail( $new_id, $localized['first_id'] );
+			} else {
+				self::maybe_set_featured_image( $new_id, $raw_html );
+			}
 		}
 
 		return $is_new ? 'created' : 'updated';
+	}
+
+	const META_IMAGE_SOURCE = '_drwealth_substack_image_source';
+
+	/**
+	 * Replace every Substack-hosted <img> in the content with a local Media
+	 * Library image (downloaded once, reused on re-import), and repoint the
+	 * links that wrap them.
+	 *
+	 * @return array{content: string, first_id: int}
+	 */
+	protected static function localize_images( $content, $post_id ) {
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+		require_once ABSPATH . 'wp-admin/includes/media.php';
+		require_once ABSPATH . 'wp-admin/includes/image.php';
+
+		$first_id = 0;
+		$map      = array(); // image key (uuid_WxH.ext) => local full URL.
+
+		// <picture><source srcset=Substack CDN> would still load remote images.
+		$content = preg_replace( '#<source\b[^>]*>#i', '', $content );
+
+		$content = preg_replace_callback(
+			'#<img\b[^>]*>#i',
+			function ( $m ) use ( $post_id, &$first_id, &$map ) {
+				$tag = new WP_HTML_Tag_Processor( $m[0] );
+
+				if ( ! $tag->next_tag( 'img' ) ) {
+					return $m[0];
+				}
+
+				$original = self::original_image_url( $tag );
+
+				if ( ! $original ) {
+					return $m[0];
+				}
+
+				$attachment_id = self::sideload_once( $original, $post_id );
+
+				if ( ! $attachment_id ) {
+					return $m[0]; // Leave as-is if the download failed.
+				}
+
+				if ( ! $first_id ) {
+					$first_id = $attachment_id;
+				}
+
+				$key = self::image_key( $original );
+				if ( $key ) {
+					$map[ $key ] = wp_get_attachment_url( $attachment_id );
+				}
+
+				$alt = (string) $tag->get_attribute( 'alt' );
+
+				return wp_get_attachment_image(
+					$attachment_id,
+					'full',
+					false,
+					array(
+						'class'   => 'wp-image-' . $attachment_id,
+						'alt'     => $alt,
+						'loading' => 'lazy',
+					)
+				);
+			},
+			$content
+		);
+
+		// Links wrapping the images pointed at Substack's CDN: send them to the local file.
+		$content = preg_replace_callback(
+			'#(<a\b[^>]*\bhref=")(https?://(?:substackcdn\.com|[a-z0-9.-]*substack[a-z0-9.-]*\.amazonaws\.com)[^"]*)(")#i',
+			function ( $m ) use ( $map ) {
+				$key = self::image_key( html_entity_decode( $m[2], ENT_QUOTES ) );
+
+				return ( $key && isset( $map[ $key ] ) ) ? $m[1] . esc_url( $map[ $key ] ) . $m[3] : $m[0];
+			},
+			$content
+		);
+
+		return array(
+			'content'  => $content,
+			'first_id' => $first_id,
+		);
+	}
+
+	/**
+	 * The original (full-size) image URL for a Substack <img>: prefer the S3 URL
+	 * in data-attrs, else unwrap a substackcdn fetch URL, else the src itself.
+	 */
+	protected static function original_image_url( $tag ) {
+		$attrs = $tag->get_attribute( 'data-attrs' );
+
+		if ( is_string( $attrs ) && '' !== $attrs ) {
+			$json = json_decode( $attrs, true );
+			if ( is_array( $json ) && ! empty( $json['src'] ) ) {
+				return esc_url_raw( $json['src'] );
+			}
+		}
+
+		$src = (string) $tag->get_attribute( 'src' );
+
+		if ( preg_match( '#substackcdn\.com/image/fetch/[^/]*/(https?%3A.+)$#i', $src, $m ) ) {
+			return esc_url_raw( rawurldecode( $m[1] ) );
+		}
+
+		// Jetpack/Photon proxy of an S3 URL.
+		if ( preg_match( '#^https?://i\d\.wp\.com/(substack[^?]+)#i', $src, $m ) ) {
+			return esc_url_raw( 'https://' . $m[1] );
+		}
+
+		return preg_match( '#^https?://#i', $src ) ? esc_url_raw( $src ) : '';
+	}
+
+	/** Stable key for an image, e.g. "dc1099a7-...-..._1050x1162.png". */
+	protected static function image_key( $url ) {
+		$url = rawurldecode( $url );
+
+		return preg_match( '#([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_\d+x\d+\.[a-z0-9]+)#i', $url, $m ) ? strtolower( $m[1] ) : '';
+	}
+
+	/**
+	 * Download an image into the Media Library, unless this exact source URL
+	 * was already imported (then reuse that attachment).
+	 *
+	 * @return int Attachment ID, or 0 on failure.
+	 */
+	protected static function sideload_once( $url, $post_id ) {
+		$existing = get_posts(
+			array(
+				'post_type'      => 'attachment',
+				'post_status'    => 'inherit',
+				'fields'         => 'ids',
+				'posts_per_page' => 1,
+				'meta_key'       => self::META_IMAGE_SOURCE,
+				'meta_value'     => $url,
+			)
+		);
+
+		if ( ! empty( $existing ) ) {
+			return (int) $existing[0];
+		}
+
+		// Fallback for images downloaded by an earlier version of this importer
+		// (no source-URL meta): match on the unique Substack filename
+		// (a UUID, so a match is safe) and adopt it.
+		$key = self::image_key( $url );
+
+		if ( $key ) {
+			$stem  = pathinfo( $key, PATHINFO_FILENAME );
+			$found = get_posts(
+				array(
+					'post_type'      => 'attachment',
+					'post_status'    => 'inherit',
+					'fields'         => 'ids',
+					'posts_per_page' => 1,
+					'meta_query'     => array(
+						array(
+							'key'     => '_wp_attached_file',
+							'value'   => $stem,
+							'compare' => 'LIKE',
+						),
+					),
+				)
+			);
+
+			if ( ! empty( $found ) ) {
+				update_post_meta( $found[0], self::META_IMAGE_SOURCE, $url );
+				return (int) $found[0];
+			}
+		}
+
+		$tmp = download_url( $url, 60 );
+
+		if ( is_wp_error( $tmp ) ) {
+			return 0;
+		}
+
+		$name = sanitize_file_name( basename( wp_parse_url( $url, PHP_URL_PATH ) ) );
+
+		$id = media_handle_sideload(
+			array(
+				'name'     => $name ? $name : 'substack-image.jpg',
+				'tmp_name' => $tmp,
+			),
+			$post_id
+		);
+
+		if ( is_wp_error( $id ) ) {
+			if ( file_exists( $tmp ) ) {
+				wp_delete_file( $tmp );
+			}
+			return 0;
+		}
+
+		update_post_meta( $id, self::META_IMAGE_SOURCE, $url );
+
+		return (int) $id;
 	}
 
 	/**
