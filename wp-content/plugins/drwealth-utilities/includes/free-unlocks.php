@@ -137,6 +137,17 @@ function drwealth_unlocks_remaining( $user_id ) {
 	return max( 0, (int) $s['limit'] - count( drwealth_unlocks_current( $user_id ) ) );
 }
 
+/** When the monthly allowance resets (first day of next month, site time), e.g. "1 December 2026". '' for "in total". */
+function drwealth_unlocks_reset_date() {
+	if ( 'total' === drwealth_unlocks_period_key() ) {
+		return '';
+	}
+
+	$next = new DateTimeImmutable( 'first day of next month midnight', wp_timezone() );
+
+	return wp_date( 'j F Y', $next->getTimestamp() );
+}
+
 function drwealth_user_has_unlocked( $post_id, $user_id = 0 ) {
 	$user_id = $user_id ? $user_id : get_current_user_id();
 
@@ -199,6 +210,7 @@ add_action(
 			$all             = is_array( $all ) ? $all : array();
 			$all[ $post_id ] = drwealth_unlocks_period_key();
 			update_user_meta( $user_id, DRWEALTH_UNLOCKS_META, $all );
+			$back = add_query_arg( 'dw_unlocked', '1', $back );
 		}
 
 		wp_safe_redirect( $back );
@@ -286,14 +298,16 @@ function drwealth_unlocks_box_html( $post_id, $user_id ) {
 	<div class="drwealth-unlock-box" style="margin:0 0 24px;padding:16px 20px;border:1px solid #e5d3c8;border-left:4px solid #D26133;border-radius:8px;background:#fdf6f2;text-align:center;">
 		<?php if ( $remaining > 0 ) : ?>
 			<p><strong>You have <?php echo (int) $remaining; ?> of <?php echo (int) $s['limit']; ?> free article unlocks left<?php echo esc_html( $per ); ?>.</strong></p>
-			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+			<form method="post" class="drwealth-unlock-form" data-post="<?php echo (int) $post_id; ?>" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 				<input type="hidden" name="action" value="drwealth_unlock_post" />
 				<input type="hidden" name="post_id" value="<?php echo (int) $post_id; ?>" />
 				<?php wp_nonce_field( 'drwealth_unlock_' . $post_id ); ?>
 				<button type="submit" class="button">Unlock this article</button>
 			</form>
 		<?php else : ?>
-			<p><strong>You've used all <?php echo (int) $s['limit']; ?> of your free article unlocks<?php echo esc_html( $per ); ?>.</strong> Subscribe to keep reading.</p>
+			<?php $reset = drwealth_unlocks_reset_date(); ?>
+				<p><strong>You've used all <?php echo (int) $s['limit']; ?> of your free article unlocks<?php echo esc_html( $per ); ?>.</strong>
+					<?php echo $reset ? 'They reset on ' . esc_html( $reset ) . '. ' : ''; ?>Subscribe to keep reading now.</p>
 		<?php endif; ?>
 	</div>
 	<?php
@@ -303,7 +317,7 @@ function drwealth_unlocks_box_html( $post_id, $user_id ) {
 /**
  * Inject the box into the final page HTML (not via the_content, so it never leaks
  * into auto-generated excerpts): above the Memberships restriction message,
- * falling back to the start of .content-inner.
+ * falling back to the start of the article body (theme independent).
  */
 add_action(
 	'template_redirect',
@@ -342,9 +356,15 @@ add_action(
 					$count
 				);
 
-				if ( ! $count ) {
+				// Fallback: start of the article body (JNews .content-inner, block theme
+				// .wp-block-post-content, classic .entry-content), first one found.
+				foreach ( array( 'content-inner', 'wp-block-post-content', 'entry-content' ) as $body_class ) {
+					if ( $count ) {
+						break;
+					}
+
 					$out = preg_replace(
-						'#(<div[^>]*class="[^"]*content-inner[^"]*"[^>]*>)#',
+						'#(<div[^>]*class="[^"]*' . $body_class . '[^"]*"[^>]*>)#',
 						'$1' . $box,
 						$html,
 						1,
@@ -353,6 +373,113 @@ add_action(
 				}
 
 				return ( $count && null !== $out ) ? $out : $html;
+			}
+		);
+	},
+	1
+);
+
+/**
+ * Remember where the reader was when they pressed "Unlock", so the page they land on
+ * after the unlock (the same article, now open) is scrolled to the same spot.
+ */
+add_action(
+	'wp_footer',
+	function () {
+		if ( ! is_singular() || ! is_user_logged_in() ) {
+			return;
+		}
+
+		$post_id  = (int) get_queried_object_id();
+		$unlocked = isset( $_GET['dw_unlocked'] ) && drwealth_user_has_unlocked( $post_id, get_current_user_id() ); // phpcs:ignore WordPress.Security.NonceVerification
+		?>
+		<script id="drwealth-unlock-scroll">
+		(function () {
+			var key = 'dwUnlockY:<?php echo (int) $post_id; ?>';
+
+			<?php if ( $unlocked ) : ?>
+			try {
+				var y = parseInt( sessionStorage.getItem( key ), 10 );
+				sessionStorage.removeItem( key );
+				if ( y > 0 ) {
+					var go = function () { window.scrollTo( 0, y ); };
+					go();
+					window.addEventListener( 'load', go );
+				}
+			} catch ( e ) {}
+
+			if ( window.history && history.replaceState ) {
+				var u = new URL( location.href );
+				u.searchParams.delete( 'dw_unlocked' );
+				history.replaceState( null, '', u.pathname + u.search + u.hash );
+			}
+			<?php else : ?>
+			document.addEventListener( 'submit', function ( e ) {
+				if ( e.target && e.target.classList && e.target.classList.contains( 'drwealth-unlock-form' ) ) {
+					try { sessionStorage.setItem( key, String( Math.round( window.pageYOffset ) ) ); } catch ( err ) {}
+				}
+			} );
+			<?php endif; ?>
+		})();
+		</script>
+		<?php
+	},
+	99
+);
+
+/** After an unlock: a short note at the top of the article saying how many unlocks are left. */
+add_action(
+	'template_redirect',
+	function () {
+		if ( ! is_singular() || ! is_user_logged_in() || ! isset( $_GET['dw_unlocked'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
+			return;
+		}
+
+		$post_id = get_queried_object_id();
+		$user_id = get_current_user_id();
+
+		if ( ! $post_id || ! drwealth_user_has_unlocked( $post_id, $user_id ) ) {
+			return;
+		}
+
+		$s         = drwealth_unlocks_settings();
+		$remaining = drwealth_unlocks_remaining( $user_id );
+		$per       = 'total' === $s['period'] ? '' : ' this month';
+		$reset     = drwealth_unlocks_reset_date();
+
+		$msg = 'Unlocked. ';
+		if ( $remaining > 0 ) {
+			$msg .= 'You have ' . $remaining . ' of ' . (int) $s['limit'] . ' free article unlocks left' . $per . '.';
+		} else {
+			$msg .= 'That was your last free unlock' . $per . '.' . ( $reset ? ' They reset on ' . $reset . '.' : '' );
+		}
+
+		$note = '<div class="drwealth-unlock-note" style="margin:0 0 24px;padding:12px 16px;border:1px solid #d1e7dd;border-left:4px solid #198754;border-radius:8px;background:#f1faf5;text-align:center;"><strong>'
+			. esc_html( $msg ) . '</strong></div>';
+		$note = str_replace( array( '\\', '$' ), array( '\\\\', '\\$' ), $note );
+
+		ob_start(
+			function ( $html ) use ( $note ) {
+				if ( false !== strpos( $html, 'drwealth-unlock-note' ) ) {
+					return $html;
+				}
+
+				foreach ( array( 'content-inner', 'wp-block-post-content', 'entry-content' ) as $body_class ) {
+					$count = 0;
+					$out   = preg_replace(
+						'#(<div[^>]*class="[^"]*' . $body_class . '[^"]*"[^>]*>)#',
+						'$1' . $note,
+						$html,
+						1,
+						$count
+					);
+
+					if ( $count && null !== $out ) {
+						return $out;
+					}
+				}
+
+				return $html;
 			}
 		);
 	},

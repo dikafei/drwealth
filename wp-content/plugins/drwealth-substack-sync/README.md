@@ -34,7 +34,7 @@ For each row, the plugin:
 - Matches an existing WordPress user by **email** (the dedupe key), or creates one (role `customer`, random password, no notification emails sent) if none exists.
 - Stores the export's `plan`, `active_subscription`, `expiry`, and `created_at` as user meta, scoped per publication (e.g. `_drwealth_substack_plan_finbiteinsights`), so re-importing **overwrites** the same user's data instead of adding a duplicate.
 - Works out this publication's own tier from `plan` and `active_subscription`:
-  - `plan == lifetime` and active → **`premium-lifetime-membership`**
+  - `plan == lifetime` and active → **`premium-membership`** with no end date (the Premium Lifetime plan is retired)
   - Any other active subscription (`yearly`, `monthly`, `comp`, `other`) → **`premium-membership`**
   - Not active → **`free-membership`**
 - **Assigns the highest tier across all publications the person is known from**, not just this one — so if the same email exists under both Finbite Insights and Growth Dragons, whichever one ranks higher wins (Lifetime > Premium > Free). Ties at the same tier (e.g. premium via a monthly plan on one publication, premium via yearly on the other) are broken by whichever has the furthest-out expiry. Existing memberships in lower plans are left in place, not removed.

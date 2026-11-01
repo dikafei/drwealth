@@ -214,7 +214,7 @@ class DrWealth_Substack_Admin {
 						<input type="number" name="limit" id="drwealth_sub_limit" value="10" min="1" max="1000" />
 						<p class="description">
 							Most recently created subscribers first. Existing WordPress users (matched by email) are updated, not duplicated.
-							Membership is Free unless there's an active subscription, in which case it's Premium (or Premium Lifetime for
+							Membership is Free unless there's an active subscription, in which case it's Premium (Premium with no end date for
 							<code>plan == lifetime</code>). If the same person exists under both publications, they get whichever plan ranks highest.
 						</p>
 					</td>
@@ -535,7 +535,7 @@ class DrWealth_Substack_Admin {
 			$sent = DrWealth_Substack_Mailer::send_test( 'migration_free' === $type ? DrWealth_Substack_Mailer::VARIANT_FREE : DrWealth_Substack_Mailer::VARIANT_PAID, $user );
 			$ok   = ! is_wp_error( $sent );
 			$msg  = $ok ? '' : $sent->get_error_message();
-		} elseif ( 'signup' === $type || 'premium' === $type ) {
+		} elseif ( in_array( $type, array( 'signup', 'premium', 'brain' ), true ) ) {
 			$ok  = drwealth_emails_send_test( $type, $user );
 			$msg = $ok ? '' : 'wp_mail() reported failure.';
 		} else {

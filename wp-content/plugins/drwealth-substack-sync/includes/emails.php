@@ -3,6 +3,7 @@
  * Customer emails:
  *   - "signup"  : sent when someone creates a free account (WooCommerce signup).
  *   - "premium" : sent when someone's Premium membership becomes active.
+ *   - "brain"   : sent when someone's Brain membership becomes active.
  *
  * Imported Substack subscribers never get these (they get the migration email
  * from the Substack Sync plugin instead): users with the Substack publications
@@ -18,7 +19,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 const DRWEALTH_EMAILS_OPTION        = 'drwealth_emails_settings';
 const DRWEALTH_EMAILS_SENT_META     = '_drwealth_signup_email_sent';
 const DRWEALTH_EMAILS_PREMIUM_META  = '_drwealth_premium_email_sent';
+const DRWEALTH_EMAILS_BRAIN_META    = '_drwealth_brain_email_sent';
 const DRWEALTH_EMAILS_PREMIUM_PLANS = array( 'premium-membership', 'premium-lifetime-membership' );
+// Brain (top tier). The plan slug is still insiders-membership on staging; it will become
+// brain-membership. Both are listed so the rename can happen in either order.
+const DRWEALTH_EMAILS_BRAIN_PLANS   = array( 'brain-membership', 'insiders-membership' );
 
 function drwealth_emails_defaults() {
 	return array(
@@ -27,26 +32,49 @@ function drwealth_emails_defaults() {
 		'signup_subject'          => 'Welcome to Dr Wealth',
 		'signup_body'             => '<p>Hi {first_name},</p>
 <p>Thanks for signing up. Your free Dr Wealth account is ready.</p>
-<p>You’ll get the Dr Wealth Weekly newsletter in your inbox every Sunday morning. Every free article on drwealth.com is open to you too.</p>
-<p>You can also read {free_unlocks} Premium articles {unlock_period}, on us. Look for the Premium tag and hit Unlock.</p>
-<p>Not sure where to start? These are the three pieces readers come back to most.</p>
-<p>[Add your top 3 article links here]</p>
+<p>Every Sunday morning, our free newsletter lands in your inbox with what moved in the markets and what we think.</p>
+<p>You can also read {free_unlocks} Premium {unlock_articles} {unlock_period}, on us. Look for the Premium tag and tap Unlock this article.</p>
+<p>Not sure where to start? Pick the market you invest in.</p>
+<ul>
+<li><a href="{site_url}/category/sg/">Singapore stocks</a></li>
+<li><a href="{site_url}/category/us/">US stocks</a></li>
+<li><a href="{site_url}/category/cn/">China and Hong Kong stocks</a></li>
+<li><a href="{site_url}/category/my/">Malaysia stocks</a></li>
+</ul>
+<p>For a quick read every weekday morning, join our <a href="https://t.me/realDrWealth">Morning TLDR on Telegram</a>.</p>
 <p>See you in the inbox,<br>Alvin Chow</p>',
 		'premium_enabled'         => 1,
-		'premium_subject'         => 'You’re in. Welcome to Dr Wealth Premium',
+		'premium_subject'         => 'You are in. Welcome to Dr Wealth Premium',
 		'premium_body'            => '<p>Hi {first_name},</p>
-<p>Thanks for subscribing to Dr Wealth Premium. I don’t take that lightly.</p>
-<p>Premium is where we go deeper than our free articles. You get our single-stock write-ups and market commentary across the US, China, Singapore and Malaysia.</p>
-<p>New posts land in your inbox as they go out. Every past post is also on drwealth.com. Log in and you’ll see the full article instead of the paywall.</p>
+<p>Thanks for subscribing to Dr Wealth Premium. You now have full access to every article on drwealth.com. Here is what that means.</p>
+<ul>
+<li>Every Premium article, new and old</li>
+<li>New articles in your inbox as they go out</li>
+<li>Log in on drwealth.com to read the full article instead of the paywall</li>
+</ul>
 <p><a href="{premium_url}">Browse Premium articles</a></p>
 <p>A few things to know.</p>
 <ul>
 <li>You manage your plan, card and receipts under My Account at <a href="{my_account_url}">{my_account_url}</a>.</li>
-<li>You can cancel any time. You keep access until the end of the period you’ve paid for.</li>
-<li>If an email doesn’t arrive, check your Promotions or Spam folder and add {sender_email} to your contacts.</li>
+<li>You can cancel any time. You keep access until the end of the period you have paid for.</li>
+<li>If an email does not arrive, check your Promotions or Spam folder and add {sender_email} to your contacts.</li>
 </ul>
-<p>We write about businesses and what we think of them. We don’t know your finances, so none of it is personal advice. Use it to sharpen your own view.</p>
-<p>If you ever want to see how we manage our own model portfolios, that’s what Dr Wealth Insiders is for.</p>
+<p>Our articles are general information. We write them without knowing your finances or goals, so they are not a recommendation to buy or sell anything. Use them to make your own decisions.</p>
+<p>Happy reading,<br>Alvin Chow</p>',
+		'brain_enabled'           => 1,
+		'brain_url'               => '',
+		'brain_subject'           => 'Welcome to Dr Wealth Brain',
+		'brain_body'              => '<p>Hi {first_name},</p>
+<p>Welcome to Dr Wealth Brain. Thank you for backing what we do.</p>
+<p>Brain is our top tier. You get everything in Premium, plus the extra material that comes with Brain. Start here: <a href="{brain_url}">What is in Dr Wealth Brain</a>.</p>
+<p>Every Premium article is open to you too. <a href="{premium_url}">Browse Premium articles</a>.</p>
+<p>A few things to know.</p>
+<ul>
+<li>You manage your plan, card and receipts under My Account at <a href="{my_account_url}">{my_account_url}</a>.</li>
+<li>You can cancel any time. You keep access until the end of the period you have paid for.</li>
+<li>If an email does not arrive, check your Promotions or Spam folder and add {sender_email} to your contacts.</li>
+</ul>
+<p>Our articles are general information. We write them without knowing your finances or goals, so they are not a recommendation to buy or sell anything. Use them to make your own decisions.</p>
 <p>Happy reading,<br>Alvin Chow</p>',
 	);
 }
@@ -64,7 +92,49 @@ function drwealth_emails_sender() {
 	);
 }
 
+/**
+ * What WP Mail SMTP is set up to send as (if the plugin is active). With the Google
+ * (Gmail API) mailer, Google only lets mail go out as the connected account / its aliases,
+ * and DMARC is p=reject, so any other From address would be rewritten or rejected.
+ *
+ * @return array{active: bool, mailer: string, from_email: string, from_name: string, force_email: bool}
+ */
+function drwealth_emails_smtp_info() {
+	$info = array(
+		'active'      => false,
+		'mailer'      => '',
+		'from_email'  => '',
+		'from_name'   => '',
+		'force_email' => false,
+	);
+
+	if ( class_exists( '\\WPMailSMTP\\Options' ) ) {
+		$o = \WPMailSMTP\Options::init();
+
+		$info['active']      = true;
+		$info['mailer']      = (string) $o->get( 'mail', 'mailer' );
+		$info['from_email']  = (string) $o->get( 'mail', 'from_email' );
+		$info['from_name']   = (string) $o->get( 'mail', 'from_name' );
+		$info['force_email'] = (bool) $o->get( 'mail', 'from_email_force' );
+	}
+
+	return $info;
+}
+
+/** True when the From address is dictated by WP Mail SMTP, not by our Sender tab. */
+function drwealth_emails_sender_locked() {
+	$smtp = drwealth_emails_smtp_info();
+
+	return $smtp['active'] && '' !== $smtp['from_email'] && ( 'gmail' === $smtp['mailer'] || $smtp['force_email'] );
+}
+
 function drwealth_emails_sender_email() {
+	// Google mailer / forced From: use exactly what WP Mail SMTP sends as, so our From,
+	// the {sender_email} in email bodies and the real envelope all agree.
+	if ( drwealth_emails_sender_locked() ) {
+		return drwealth_emails_smtp_info()['from_email'];
+	}
+
 	$sender = drwealth_emails_sender();
 
 	return $sender['from_email'] ? $sender['from_email'] : get_option( 'admin_email' );
@@ -121,6 +191,13 @@ function drwealth_emails_unlock_allowance() {
 	);
 }
 
+/** Where "{brain_url}" points: Site Emails > Brain page URL, default /brain/. */
+function drwealth_emails_brain_url() {
+	$s = drwealth_emails_settings();
+
+	return $s['brain_url'] ? $s['brain_url'] : home_url( '/brain/' );
+}
+
 function drwealth_emails_render( $template, $user, $extra = array() ) {
 	$s          = drwealth_emails_settings();
 	$first_name = $user->first_name ? $user->first_name : $user->display_name;
@@ -137,7 +214,10 @@ function drwealth_emails_render( $template, $user, $extra = array() ) {
 			'{my_account_url}' => esc_url( function_exists( 'wc_get_page_permalink' ) ? wc_get_page_permalink( 'myaccount' ) : home_url( '/my-account/' ) ),
 			'{sender_email}'   => esc_html( $sender ),
 			'{free_unlocks}'   => (int) drwealth_emails_unlock_allowance()['limit'],
+			'{unlock_articles}' => 1 === (int) drwealth_emails_unlock_allowance()['limit'] ? 'article' : 'articles',
 			'{unlock_period}'  => esc_html( drwealth_emails_unlock_allowance()['period'] ),
+			'{brain_url}'      => esc_url( drwealth_emails_brain_url() ),
+			'{site_url}'       => esc_url( untrailingslashit( home_url() ) ),
 			'{site_name}'      => esc_html( get_bloginfo( 'name' ) ),
 		),
 		$extra
@@ -232,11 +312,27 @@ add_filter(
 	}
 );
 
-/** 11) Premium membership becomes active. */
+/**
+ * 11) Premium / Brain membership becomes active: send that tier's welcome email.
+ * Which email: by the plan's slug. Sent once per membership, and again whenever the same
+ * membership becomes active again (e.g. paid again after a lapse).
+ */
+function drwealth_emails_membership_type( $plan_slug ) {
+	if ( in_array( $plan_slug, DRWEALTH_EMAILS_BRAIN_PLANS, true ) ) {
+		return 'brain';
+	}
+
+	if ( in_array( $plan_slug, DRWEALTH_EMAILS_PREMIUM_PLANS, true ) ) {
+		return 'premium';
+	}
+
+	return '';
+}
+
 function drwealth_emails_maybe_send_premium( $user_membership, $force = false ) {
 	$s = drwealth_emails_settings();
 
-	if ( ! $s['premium_enabled'] || ! is_object( $user_membership ) || ! method_exists( $user_membership, 'get_status' ) ) {
+	if ( ! is_object( $user_membership ) || ! method_exists( $user_membership, 'get_status' ) ) {
 		return;
 	}
 
@@ -245,11 +341,13 @@ function drwealth_emails_maybe_send_premium( $user_membership, $force = false ) 
 	}
 
 	$plan = $user_membership->get_plan();
+	$type = $plan ? drwealth_emails_membership_type( $plan->get_slug() ) : '';
 
-	if ( ! $plan || ! in_array( $plan->get_slug(), DRWEALTH_EMAILS_PREMIUM_PLANS, true ) ) {
+	if ( ! $type || empty( $s[ $type . '_enabled' ] ) ) {
 		return;
 	}
 
+	$meta    = 'brain' === $type ? DRWEALTH_EMAILS_BRAIN_META : DRWEALTH_EMAILS_PREMIUM_META;
 	$user_id = $user_membership->get_user_id();
 
 	if ( drwealth_emails_is_imported_user( $user_id ) ) {
@@ -259,22 +357,22 @@ function drwealth_emails_maybe_send_premium( $user_membership, $force = false ) 
 	// Once per membership by default; $force = the membership just (re)became active
 	// (e.g. paid again after a lapse), so send again. The 2 minute guard stops the
 	// several Memberships hooks firing for one event from sending twice.
-	$last = (int) strtotime( (string) get_user_meta( $user_id, DRWEALTH_EMAILS_PREMIUM_META, true ) );
+	$last = (int) strtotime( (string) get_user_meta( $user_id, $meta, true ) );
 	$mid  = (int) $user_membership->get_id();
 
 	if ( $last && ( time() - $last ) < 120 ) {
 		return;
 	}
 
-	if ( ! $force && get_post_meta( $mid, DRWEALTH_EMAILS_PREMIUM_META, true ) ) {
+	if ( ! $force && get_post_meta( $mid, $meta, true ) ) {
 		return;
 	}
 
 	$user = get_userdata( $user_id );
 
-	if ( $user && drwealth_emails_send( $user, drwealth_emails_render( $s['premium_subject'], $user ), drwealth_emails_render( $s['premium_body'], $user ) ) ) {
-		update_user_meta( $user_id, DRWEALTH_EMAILS_PREMIUM_META, current_time( 'mysql' ) );
-		update_post_meta( $mid, DRWEALTH_EMAILS_PREMIUM_META, current_time( 'mysql' ) );
+	if ( $user && drwealth_emails_send( $user, drwealth_emails_render( $s[ $type . '_subject' ], $user ), drwealth_emails_render( $s[ $type . '_body' ], $user ) ) ) {
+		update_user_meta( $user_id, $meta, current_time( 'mysql' ) );
+		update_post_meta( $mid, $meta, current_time( 'mysql' ) );
 	}
 }
 
@@ -285,6 +383,7 @@ add_action(
 	function ( $post_id ) {
 		if ( 'wc_user_membership' === get_post_type( $post_id ) ) {
 			delete_post_meta( $post_id, DRWEALTH_EMAILS_PREMIUM_META );
+			delete_post_meta( $post_id, DRWEALTH_EMAILS_BRAIN_META );
 		}
 	}
 );
@@ -306,6 +405,7 @@ add_action(
 			drwealth_emails_maybe_send_premium( $user_membership, true );
 		} elseif ( 'active' !== $new_status && is_object( $user_membership ) ) {
 			delete_post_meta( $user_membership->get_id(), DRWEALTH_EMAILS_PREMIUM_META );
+			delete_post_meta( $user_membership->get_id(), DRWEALTH_EMAILS_BRAIN_META );
 		}
 	},
 	20,
@@ -384,6 +484,10 @@ add_action(
 						'premium_enabled'         => empty( $in['premium_enabled'] ) ? 0 : 1,
 						'premium_subject'         => sanitize_text_field( isset( $in['premium_subject'] ) ? $in['premium_subject'] : $d['premium_subject'] ),
 						'premium_body'            => wp_kses_post( isset( $in['premium_body'] ) ? $in['premium_body'] : $d['premium_body'] ),
+						'brain_enabled'           => empty( $in['brain_enabled'] ) ? 0 : 1,
+						'brain_url'               => isset( $in['brain_url'] ) ? esc_url_raw( $in['brain_url'] ) : '',
+						'brain_subject'           => sanitize_text_field( isset( $in['brain_subject'] ) ? $in['brain_subject'] : $d['brain_subject'] ),
+						'brain_body'              => wp_kses_post( isset( $in['brain_body'] ) ? $in['brain_body'] : $d['brain_body'] ),
 					);
 				},
 			)
@@ -396,7 +500,7 @@ function drwealth_emails_render_settings() {  // Rendered inside the Site Emails
 	$n = DRWEALTH_EMAILS_OPTION;
 	?>
 	<div>
-		<p>Placeholders: <code>{first_name}</code> <code>{email}</code> <code>{premium_url}</code> <code>{my_account_url}</code> <code>{sender_email}</code> <code>{free_unlocks}</code> (number of free Premium unlocks) <code>{unlock_period}</code> ("a month" / "in total") <code>{site_name}</code>.
+		<p>Placeholders: <code>{first_name}</code> <code>{email}</code> <code>{premium_url}</code> <code>{my_account_url}</code> <code>{sender_email}</code> <code>{free_unlocks}</code> (number of free Premium unlocks) <code>{unlock_period}</code> ("a month" / "in total") <code>{unlock_articles}</code> ("article" / "articles") <code>{brain_url}</code> <code>{site_url}</code> <code>{site_name}</code>.
 		Imported Substack subscribers are never sent these.</p>
 		<form method="post" action="options.php">
 			<?php settings_fields( 'drwealth_emails' ); ?>
@@ -418,7 +522,15 @@ function drwealth_emails_render_settings() {  // Rendered inside the Site Emails
 				<tr><th>Body</th><td><?php wp_editor( $s['premium_body'], 'dw_premium_body', array( 'textarea_name' => $n . '[premium_body]', 'textarea_rows' => 16, 'media_buttons' => false ) ); ?></td></tr>
 			</table>
 
-			<?php submit_button(); ?>
+						<h2>Brain signup email</h2>
+			<table class="form-table">
+				<tr><th>Enabled</th><td><label><input type="checkbox" name="<?php echo esc_attr( $n ); ?>[brain_enabled]" value="1" <?php checked( $s['brain_enabled'] ); ?> /> Send when a Brain membership becomes active</label></td></tr>
+				<tr><th>Brain page URL</th><td><input type="url" class="large-text" name="<?php echo esc_attr( $n ); ?>[brain_url]" value="<?php echo esc_attr( $s['brain_url'] ); ?>" placeholder="<?php echo esc_attr( home_url( '/brain/' ) ); ?>" /><p class="description">What <code>{brain_url}</code> becomes. Blank = <?php echo esc_html( home_url( '/brain/' ) ); ?></p></td></tr>
+				<tr><th>Subject</th><td><input type="text" class="large-text" name="<?php echo esc_attr( $n ); ?>[brain_subject]" value="<?php echo esc_attr( $s['brain_subject'] ); ?>" /></td></tr>
+				<tr><th>Body</th><td><?php wp_editor( $s['brain_body'], 'dw_brain_body', array( 'textarea_name' => $n . '[brain_body]', 'textarea_rows' => 16, 'media_buttons' => false ) ); ?></td></tr>
+			</table>
+
+<?php submit_button(); ?>
 		</form>
 	</div>
 	<?php
@@ -431,6 +543,27 @@ function drwealth_emails_render_sender() {
 	<div>
 		<p>The From name and address used for <strong>every</strong> email in this plugin: the signup and Premium emails, and the Substack migration emails.
 		Leave blank to use the site defaults (WP Mail SMTP / admin email). The address should match the one WP Mail SMTP is authorised to send from.</p>
+			<?php
+			$smtp = drwealth_emails_smtp_info();
+
+			if ( ! $smtp['active'] ) :
+				?>
+				<p><em>WP Mail SMTP is not active here, so mail goes out through the server's default mailer.</em></p>
+			<?php elseif ( drwealth_emails_sender_locked() ) : ?>
+				<div class="notice notice-info inline"><p>
+					<strong>The From address is set by WP Mail SMTP</strong> (mailer: <code><?php echo esc_html( $smtp['mailer'] ); ?></code>): all emails go out as
+					<code><?php echo esc_html( $smtp['from_email'] ); ?></code>. <?php echo 'gmail' === $smtp['mailer'] ? 'Google only allows the connected account (or its aliases) as the From address' : 'WP Mail SMTP is set to force this From address'; ?>, so the address below is ignored and <code>{sender_email}</code> uses this one.
+					<?php
+					$typed = drwealth_emails_sender();
+					if ( $typed['from_email'] && strtolower( $typed['from_email'] ) !== strtolower( $smtp['from_email'] ) ) :
+						?>
+						<br /><strong>Your saved address (<?php echo esc_html( $typed['from_email'] ); ?>) differs and is not being used.</strong> Clear it, or change it in WP Mail SMTP.
+					<?php endif; ?>
+				</p></div>
+			<?php else : ?>
+				<p><em>WP Mail SMTP sends as <code><?php echo esc_html( $smtp['from_email'] ); ?></code> by default (mailer <code><?php echo esc_html( $smtp['mailer'] ); ?></code>). The address below must be authorised with that mailer, and its domain must pass SPF/DKIM/DMARC.</em></p>
+			<?php endif; ?>
+
 		<form method="post" action="options.php">
 			<?php settings_fields( 'drwealth_emails_sender' ); ?>
 			<table class="form-table">
@@ -448,7 +581,7 @@ function drwealth_emails_render_sender() {
 			</table>
 			<?php submit_button(); ?>
 		</form>
-		<?php drwealth_emails_render_test_form( array( 'signup' => 'Send test: free signup email', 'premium' => 'Send test: Premium signup email' ), 'site-emails' ); ?>
+		<?php drwealth_emails_render_test_form( array( 'signup' => 'Send test: free signup email', 'premium' => 'Send test: Premium signup email', 'brain' => 'Send test: Brain signup email' ), 'site-emails' ); ?>
 	</div>
 	<?php
 }
@@ -461,7 +594,7 @@ function drwealth_emails_render_sender() {
  */
 function drwealth_emails_send_test( $type, $user ) {
 	$s       = drwealth_emails_settings();
-	$prefix  = 'premium' === $type ? 'premium' : 'signup';
+	$prefix  = in_array( $type, array( 'premium', 'brain' ), true ) ? $type : 'signup';
 	$subject = '[TEST] ' . drwealth_emails_render( $s[ $prefix . '_subject' ], $user );
 	$body    = drwealth_emails_render( $s[ $prefix . '_body' ], $user );
 

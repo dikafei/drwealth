@@ -22,10 +22,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 class DrWealth_Substack_Subscriber_Importer {
 
 	/**
-	 * The WooCommerce Membership plans currently in use. "insiders-membership"
-	 * and "insiders-lifetime-membership" also exist on the site, but we don't
-	 * assign those yet — there's no signal in the export to distinguish an
-	 * "insider" from a regular premium subscriber. Similarly, "comp" and
+	 * The WooCommerce Membership plans currently in use. The top tier (now "Brain",
+	 * plan slug insiders-membership, to become brain-membership) is not assigned by
+	 * the import: nothing in the export tells a Brain buyer apart from a regular
+	 * premium subscriber. The Premium Lifetime plan is retired, so lifetime
+	 * subscribers get the Premium plan with no end date (see ensure_membership()).
+	 * Similarly, "comp" and
 	 * "other" plan values, and the yearly/monthly distinction, aren't
 	 * differentiated yet (undecided whether the client wants that split) —
 	 * they're all just treated as regular active subscribers.
@@ -297,7 +299,7 @@ class DrWealth_Substack_Subscriber_Importer {
 	 */
 	public static function get_plan_label( $slug ) {
 		$labels = array(
-			self::MEMBERSHIP_PLAN_PREMIUM_LIFETIME_SLUG => 'Premium Lifetime Membership',
+			self::MEMBERSHIP_PLAN_PREMIUM_LIFETIME_SLUG => 'Premium Membership (lifetime access)',
 			self::MEMBERSHIP_PLAN_PREMIUM_SLUG          => 'Premium Membership',
 			self::MEMBERSHIP_PLAN_FREE_SLUG             => 'Free Membership',
 		);
@@ -393,7 +395,14 @@ class DrWealth_Substack_Subscriber_Importer {
 			return;
 		}
 
-		$plan = wc_memberships_get_membership_plan( $plan_slug );
+		// The separate Premium Lifetime plan has been retired: lifetime subscribers now
+		// hold the normal Premium plan with no end date.
+		$is_lifetime = ( self::MEMBERSHIP_PLAN_PREMIUM_LIFETIME_SLUG === $plan_slug );
+		$plan        = wc_memberships_get_membership_plan( $is_lifetime ? self::MEMBERSHIP_PLAN_PREMIUM_SLUG : $plan_slug );
+
+		if ( ! $plan && $is_lifetime ) {
+			$plan = wc_memberships_get_membership_plan( $plan_slug ); // Old site that still has the lifetime plan.
+		}
 
 		if ( ! $plan ) {
 			return;
@@ -423,7 +432,7 @@ class DrWealth_Substack_Subscriber_Importer {
 			return;
 		}
 
-		if ( self::MEMBERSHIP_PLAN_PREMIUM_LIFETIME_SLUG === $plan_slug ) {
+		if ( $is_lifetime ) {
 			$membership->set_end_date( '' ); // Lifetime never expires.
 		} elseif ( $end_date ) {
 			$membership->set_end_date( $end_date );

@@ -150,7 +150,7 @@ function drwealth_seo_filter_html( $html ) {
 	}
 
 	// Selector wrapping the gated part of the article. Adjust if the theme differs.
-	$css_selector = apply_filters( 'drwealth_seo_paywall_css_selector', '.content-inner' );
+	$css_selector = apply_filters( 'drwealth_seo_paywall_css_selector', '.content-inner, .entry-content, .wp-block-post-content' );
 
 	return preg_replace_callback(
 		'#(<script[^>]*type=["\']application/ld\+json["\'][^>]*>)(.*?)(</script>)#is',

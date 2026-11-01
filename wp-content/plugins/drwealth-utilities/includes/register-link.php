@@ -35,9 +35,17 @@ add_action(
 					return;
 				}
 
+				// Plain WooCommerce shows both columns side by side: just scroll to the
+				// registration form and leave the login form alone.
+				if ( 'none' !== window.getComputedStyle( register ).display ) {
+					register.scrollIntoView( { block: 'start' } );
+					return;
+				}
+
 				login.style.display    = 'none';
 				register.style.display = 'block';
 
+				// JNews' labels (harmless if the theme doesn't have them).
 				document.querySelectorAll( '.singup-account-lable' ).forEach( function ( el ) { el.style.display = 'none'; } );
 				document.querySelectorAll( '.singin-account-lable' ).forEach( function ( el ) { el.style.display = 'block'; } );
 			}

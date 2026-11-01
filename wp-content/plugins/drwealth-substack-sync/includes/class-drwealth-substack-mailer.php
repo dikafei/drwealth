@@ -30,12 +30,12 @@ class DrWealth_Substack_Mailer {
 
 	const DEFAULT_BODY_FREE = '<p>Hi {first_name},</p>
 <p>We’re bringing Finbite Insights and Growth Dragons together on drwealth.com, alongside Dr Wealth’s content.</p>
-<p>Our articles and newsletters have lived across different websites. This move brings them under one roof, making it easier for you to follow our research across Singapore, China and the US.</p>
+<p>Our articles and newsletters have lived across different websites. This move brings them under one roof, making it easier for you to follow our analysis of Singapore, China and the US.</p>
 <h3>Your subscription stays free</h3>
-<p>You’ll continue receiving our free newsletters by email. You don’t need to pay to stay subscribed. Paid research will remain available to Premium subscribers.</p>
+<p>You’ll continue receiving our free newsletters by email. You don’t need to pay to stay subscribed. Premium articles will remain available to Premium subscribers.</p>
 <h3>One place to read more</h3>
 <p>Your Dr Wealth account will let you browse our free content without switching between separate newsletter sites.</p>
-<p>If you’d like access to our paid research, Dr Wealth Premium brings together Dr Wealth’s premium content, Finbite Insights and Growth Dragons for one fixed subscription price.</p>
+<p>If you’d like access to our Premium articles, Dr Wealth Premium brings together Dr Wealth’s premium content, Finbite Insights and Growth Dragons for one fixed subscription price.</p>
 <p><a href="{subscription_url}">Explore Dr Wealth Premium</a></p>
 <h3>Set up your Dr Wealth login</h3>
 <p>Your account will use the same email address as your Substack subscription. Set your password below whenever you’d like to read on the website. You don’t need to do this to keep receiving free emails.</p>
@@ -48,12 +48,12 @@ class DrWealth_Substack_Mailer {
 
 	const DEFAULT_BODY_PAID = '<p>Hi {first_name},</p>
 <p>We’re bringing Finbite Insights and Growth Dragons together on drwealth.com, alongside Dr Wealth’s premium content.</p>
-<p>Our research has been spread across separate websites and subscriptions. We’re bringing it together so you can find more of what you need in one place.</p>
-<h3>Three sources of research, one subscription</h3>
+<p>Our articles have been spread across separate websites and subscriptions. We’re bringing them together so you can find more of what you need in one place.</p>
+<h3>Three sources of articles, one subscription</h3>
 <p>You’ll get Dr Wealth’s premium content, Finbite Insights and Growth Dragons for one fixed subscription price, with coverage across Singapore, China and the US.</p>
 <p>You won’t need separate newsletter subscriptions or different logins to read them.</p>
 <h3>Still delivered to your inbox</h3>
-<p>You’ll continue receiving our research by email. You can also use your Dr Wealth login to read it on drwealth.com.</p>
+<p>You’ll continue receiving our articles by email. You can also use your Dr Wealth login to read it on drwealth.com.</p>
 <p>This is our first step towards bringing Dr Wealth’s services under one account. Course recordings haven’t moved yet, so please continue accessing those through your existing course platform.</p>
 <h3>You keep all the subscription time you’ve paid for</h3>
 <p>Any remaining time on your existing subscription will carry over to your Dr Wealth subscription. Your access currently runs until: <strong>{expiry}</strong>.</p>
@@ -63,7 +63,7 @@ class DrWealth_Substack_Mailer {
 <h3>Set up your Dr Wealth login</h3>
 <p>Your account will use the same email address as your Substack subscription. Click below to set your password.</p>
 <p><a href="{reset_link}">Set up my Dr Wealth account</a></p>
-<p>Thank you for supporting our work. We look forward to bringing you more research through one Dr Wealth subscription.</p>
+<p>Thank you for supporting our work. We look forward to bringing you more articles through one Dr Wealth subscription.</p>
 <p>If you have questions or trouble accessing your account, reply to this email and we’ll help.</p>
 <p>Alvin Chow<br>Dr Wealth</p>';
 
@@ -324,6 +324,7 @@ class DrWealth_Substack_Mailer {
 			'{renewal_note}'    => $renewal_note,
 			'{login_url}'       => esc_url( wp_login_url() ),
 			'{subscription_url}' => esc_url( home_url( '/subscription/' ) ),
+			'{brain_url}'        => esc_url( function_exists( 'drwealth_emails_brain_url' ) ? drwealth_emails_brain_url() : home_url( '/brain/' ) ),
 			'{free_unlocks}'    => function_exists( 'drwealth_emails_unlock_allowance' ) ? (int) drwealth_emails_unlock_allowance()['limit'] : 3,
 			'{unlock_period}'   => function_exists( 'drwealth_emails_unlock_allowance' ) ? esc_html( drwealth_emails_unlock_allowance()['period'] ) : 'a month',
 			'{sender_email}'    => esc_html( function_exists( 'drwealth_emails_sender_email' ) ? drwealth_emails_sender_email() : get_option( 'admin_email' ) ),
