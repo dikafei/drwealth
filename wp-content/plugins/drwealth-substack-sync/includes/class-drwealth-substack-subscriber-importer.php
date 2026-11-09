@@ -212,7 +212,11 @@ class DrWealth_Substack_Subscriber_Importer {
 
 		self::ensure_membership( $user_id, $effective['slug'], self::to_local_mysql( $effective['expiry'] ) );
 
-		return $is_new ? 'created' : 'updated';
+		$result = $is_new ? 'created' : 'updated';
+
+		drwealth_substack_stamp( 'user', $user_id, $result );
+
+		return $result;
 	}
 
 	/**

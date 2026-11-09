@@ -226,7 +226,11 @@ class DrWealth_Substack_Importer {
 			}
 		}
 
-		return $is_new ? 'created' : 'updated';
+		$result = $is_new ? 'created' : 'updated';
+
+		drwealth_substack_stamp( 'post', $new_id, $result );
+
+		return $result;
 	}
 
 	const META_IMAGE_SOURCE = '_drwealth_substack_image_source';

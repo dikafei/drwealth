@@ -3,7 +3,7 @@
  * Plugin Name: DrWealth Member Tools
  * Description: Substack migration (posts, subscribers, migration email) plus the site's signup and Premium emails, in one place.
  * Version: 0.1.0
- * Author: DrWealth
+ * Author:     Dika / Jelly Pixel Studio
  * Text Domain: drwealth-substack-sync
  */
 
@@ -14,6 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 define( 'DRWEALTH_SUBSTACK_SYNC_VERSION', '0.1.0' );
 define( 'DRWEALTH_SUBSTACK_SYNC_DIR', plugin_dir_path( __FILE__ ) );
 
+require_once DRWEALTH_SUBSTACK_SYNC_DIR . 'includes/tracking.php';
 require_once DRWEALTH_SUBSTACK_SYNC_DIR . 'includes/class-drwealth-substack-zip-helper.php';
 require_once DRWEALTH_SUBSTACK_SYNC_DIR . 'includes/class-drwealth-substack-importer.php';
 require_once DRWEALTH_SUBSTACK_SYNC_DIR . 'includes/class-drwealth-substack-subscriber-importer.php';

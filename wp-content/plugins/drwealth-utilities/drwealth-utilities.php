@@ -2,6 +2,7 @@
 /**
  * Plugin Name: DrWealth Utilities
  * Description: Small site-specific fixes and tweaks for drwealth.com, one module per file in includes/.
+ * Author:      Dika / Jelly Pixel Studio
  * Version:     1.0.0
  */
 
