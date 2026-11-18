@@ -37,9 +37,13 @@ For each row, the plugin:
   - `plan == lifetime` and active → **`premium-membership`** with no end date (the Premium Lifetime plan is retired)
   - Any other active subscription (`yearly`, `monthly`, `comp`, `other`) → **`premium-membership`**
   - Not active → **`free-membership`**
-- **Assigns the highest tier across all publications the person is known from**, not just this one — so if the same email exists under both Finbite Insights and Growth Dragons, whichever one ranks higher wins (Lifetime > Premium > Free). Ties at the same tier (e.g. premium via a monthly plan on one publication, premium via yearly on the other) are broken by whichever has the furthest-out expiry. Existing memberships in lower plans are left in place, not removed.
+- The tier shown on the profile is still the highest across publications (Lifetime > Premium > Free), but the membership itself is only created at activation (below).
 - `insiders-membership` and `insiders-lifetime-membership` are not assigned — there's no signal in the export to tell an "insider" apart from a regular premium subscriber.
-- **Sets the WooCommerce membership's own expiration** to match Substack's `expiry` for `premium-membership` (kept in sync on every re-import, so a Substack renewal pushes the WordPress expiry out too); `premium-lifetime-membership` never expires. This matters because these memberships are granted directly (`wc_memberships_create_user_membership()`), not through a subscription product purchase — nothing else on the site would otherwise expire them. If someone later buys the real subscription product through checkout, WooCommerce just extends/updates this same membership record rather than conflicting with it.
+- **Does not create a membership.** Import only creates the user and saves each publication's data, so Finbite Insights and Growth Dragons can both be imported first. The membership is created later, in the same step as the email (see "Activate + email" below).
+
+### Activate + email (membership and email in one step)
+
+For each person the plugin adds up the remaining time on every active paid plan across both publications (expiry minus today, plans already expired add nothing), then rounds the result up to the end of that month (the buffer; filter `drwealth_substack_expiry_buffer` returning `none` turns the rounding off). A lifetime plan gets Premium with no end date; an active plan with no usable expiry date also gets Premium with no end date; nobody with time left gets Free. It then creates the WooCommerce membership with that end date and sends the email, which shows the same date. The result is stored (`_drwealth_substack_activation`), so a retry or "Resend" reuses the same end date. Memberships are granted directly (`wc_memberships_create_user_membership()`), not via a subscription purchase, so the end date set here is what expires them; a later real purchase extends the same record.
 
 ### comp / other / yearly / monthly
 

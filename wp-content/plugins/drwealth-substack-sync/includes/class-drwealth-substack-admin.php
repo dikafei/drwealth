@@ -214,8 +214,8 @@ class DrWealth_Substack_Admin {
 						<input type="number" name="limit" id="drwealth_sub_limit" value="10" min="1" max="1000" />
 						<p class="description">
 							Most recently created subscribers first. Existing WordPress users (matched by email) are updated, not duplicated.
-							Membership is Free unless there's an active subscription, in which case it's Premium (Premium with no end date for
-							<code>plan == lifetime</code>). If the same person exists under both publications, they get whichever plan ranks highest.
+							Import creates the user and saves the Substack data only. <strong>No membership is created here.</strong>
+							Import both publications' files first; the membership is created later, together with the email (see below).
 						</p>
 					</td>
 				</tr>
@@ -224,11 +224,13 @@ class DrWealth_Substack_Admin {
 			<?php submit_button( 'Import Subscribers' ); ?>
 		</form>
 
-		<h2>Welcome emails</h2>
+		<h2>Activate memberships + send emails</h2>
 		<p>
-			<?php echo (int) DrWealth_Substack_Mailer::count_pending(); ?> imported subscriber(s) haven't been sent a welcome email yet.
-			Importing/re-importing never sends mail on its own — only the buttons below do, and each subscriber is only ever emailed once
-			this way (use the per-row "Resend" button if you need to email someone again).
+			<?php echo (int) DrWealth_Substack_Mailer::count_pending(); ?> imported subscriber(s) haven't been activated and emailed yet.
+			Each run, for every person, in one step: add up the remaining time from both newsletters (counted from today, rounded up to the
+			end of the month), create their membership with that end date, and send the migration email. Lifetime plans get no end date.
+			Importing never does any of this, and each subscriber is only processed once this way (the per-row "Resend" button re-sends the
+			email only, with the same end date).
 		</p>
 		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 			<?php wp_nonce_field( self::NONCE_ACTION_SEND_BATCH ); ?>
@@ -237,7 +239,7 @@ class DrWealth_Substack_Admin {
 				Emails to send this run:
 				<input type="number" name="batch_limit" value="20" min="1" max="500" />
 			</label>
-			<?php submit_button( 'Send Batch', 'secondary', 'submit', false ); ?>
+			<?php submit_button( 'Activate + email batch', 'secondary', 'submit', false ); ?>
 		</form>
 
 		<h2>Imported Substack subscribers</h2>
@@ -309,8 +311,8 @@ class DrWealth_Substack_Admin {
 					<th>Publication(s)</th>
 					<th>Plan</th>
 					<th>Active</th>
-					<th>Combined membership</th>
-					<th>Welcome email</th>
+					<th>Membership</th>
+					<th>Activation + email</th>
 				</tr>
 			</thead>
 			<tbody>
@@ -332,7 +334,18 @@ class DrWealth_Substack_Admin {
 						<td><?php echo esc_html( implode( ', ', $publications ) ); ?></td>
 						<td><?php echo esc_html( implode( ', ', $plans ) ); ?></td>
 						<td><?php echo esc_html( implode( ', ', $actives ) ); ?></td>
-						<td><?php echo esc_html( DrWealth_Substack_Subscriber_Importer::determine_effective_membership( $user->ID ) ); ?></td>
+						<td>
+							<?php
+							$activation = DrWealth_Substack_Subscriber_Importer::get_activation( $user->ID );
+
+							if ( $activation ) {
+								echo esc_html( $activation['slug'] . ( $activation['end'] ? ' until ' . mysql2date( get_option( 'date_format' ), $activation['end'] ) : '' ) );
+							} else {
+								$preview = DrWealth_Substack_Subscriber_Importer::plan_activation( $user->ID );
+								echo '<em>Not activated.</em> Would get: ' . esc_html( $preview['slug'] . ( $preview['end'] ? ' until ' . mysql2date( get_option( 'date_format' ), $preview['end'] ) : '' ) );
+							}
+							?>
+						</td>
 						<td>
 							<?php if ( $emailed_at ) : ?>
 								Sent <?php echo esc_html( mysql2date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), $emailed_at ) ); ?><br />
@@ -343,7 +356,7 @@ class DrWealth_Substack_Admin {
 								<?php wp_nonce_field( DrWealth_Substack_Admin::NONCE_ACTION_SEND_EMAIL ); ?>
 								<input type="hidden" name="action" value="drwealth_substack_send_welcome_email" />
 								<input type="hidden" name="user_id" value="<?php echo esc_attr( $user->ID ); ?>" />
-								<button type="submit" class="button button-small"><?php echo $emailed_at ? 'Resend' : 'Send welcome email'; ?></button>
+								<button type="submit" class="button button-small"><?php echo $emailed_at ? 'Resend' : 'Activate + email'; ?></button>
 							</form>
 						</td>
 					</tr>
@@ -621,7 +634,7 @@ class DrWealth_Substack_Admin {
 		$limit  = isset( $_POST['batch_limit'] ) ? (int) $_POST['batch_limit'] : 20;
 		$result = DrWealth_Substack_Mailer::send_batch( $limit );
 
-		$message = sprintf( 'Sent %d welcome email(s).', $result['sent'] );
+		$message = sprintf( 'Activated memberships and sent %d email(s).', $result['sent'] );
 
 		if ( ! empty( $result['errors'] ) ) {
 			$message .= ' ' . count( $result['errors'] ) . ' error(s): ' . implode( '; ', $result['errors'] );

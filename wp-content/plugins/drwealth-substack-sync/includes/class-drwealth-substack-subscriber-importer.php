@@ -205,18 +205,111 @@ class DrWealth_Substack_Subscriber_Importer {
 
 		self::track_publication( $user_id, $publication_key );
 
-		// Both Substacks feed into the same WordPress site, so if this
-		// person exists under more than one publication, they get whichever
-		// plan is highest across all of them — not just this publication's.
-		$effective = self::get_effective_membership_info( $user_id );
-
-		self::ensure_membership( $user_id, $effective['slug'], self::to_local_mysql( $effective['expiry'] ) );
+		// Importing only creates the user and records the Substack data for each
+		// publication. The WooCommerce membership (and its end date) is created later,
+		// in the same step that sends the migration email (see activate_membership()),
+		// so both publications' data can be combined at that point.
 
 		$result = $is_new ? 'created' : 'updated';
 
 		drwealth_substack_stamp( 'user', $user_id, $result );
 
 		return $result;
+	}
+
+	// Stored result of activate_membership(): array( slug, end, expiry, computed_at ).
+	const META_ACTIVATION = '_drwealth_substack_activation';
+
+	/**
+	 * Work out the membership a user gets on activation, from the data of every
+	 * publication they were imported from. Pure calculation: changes nothing.
+	 *
+	 * - Any lifetime plan: Premium with no end date.
+	 * - Otherwise the remaining time on each active paid plan (expiry minus now) is
+	 *   added together, counted from $now, then rounded up to the end of that month
+	 *   (the buffer). Plans already past their expiry add nothing.
+	 * - An active plan with no usable expiry date: Premium with no end date.
+	 * - Nothing paid left: Free.
+	 *
+	 * @param int      $user_id User ID.
+	 * @param int|null $now     Unix time to count from (defaults to now).
+	 * @return array{slug:string,end:string,expiry:string,remaining_days:int,computed_at:string}
+	 */
+	public static function plan_activation( $user_id, $now = null ) {
+		$now       = $now ? (int) $now : time();
+		$lifetime  = false;
+		$open      = false;
+		$remaining = 0;
+
+		foreach ( self::get_tracked_publications( $user_id ) as $publication_key ) {
+			$slug = get_user_meta( $user_id, self::META_MEMBERSHIP . '_' . $publication_key, true );
+
+			if ( self::MEMBERSHIP_PLAN_PREMIUM_LIFETIME_SLUG === $slug ) {
+				$lifetime = true;
+			} elseif ( self::MEMBERSHIP_PLAN_PREMIUM_SLUG === $slug ) {
+				$ts = self::expiry_timestamp( $user_id, $publication_key );
+
+				if ( ! $ts ) {
+					$open = true;
+				} elseif ( $ts > $now ) {
+					$remaining += $ts - $now;
+				}
+			}
+		}
+
+		$out = array(
+			'slug'           => self::MEMBERSHIP_PLAN_FREE_SLUG,
+			'end'            => '',
+			'expiry'         => '',
+			'remaining_days' => 0,
+			'computed_at'    => gmdate( 'Y-m-d H:i:s', $now ),
+		);
+
+		if ( $lifetime ) {
+			$out['slug'] = self::MEMBERSHIP_PLAN_PREMIUM_LIFETIME_SLUG;
+		} elseif ( $remaining > 0 ) {
+			$end = ( new DateTime( '@' . ( $now + $remaining ) ) )->setTimezone( wp_timezone() );
+
+			if ( 'none' !== apply_filters( 'drwealth_substack_expiry_buffer', 'end_of_month' ) ) {
+				$end->modify( 'last day of this month' )->setTime( 23, 59, 59 );
+			}
+
+			$out['slug']           = self::MEMBERSHIP_PLAN_PREMIUM_SLUG;
+			$out['end']            = $end->format( 'Y-m-d H:i:s' );
+			$out['expiry']         = $end->format( 'Y-m-d' );
+			$out['remaining_days'] = (int) round( $remaining / DAY_IN_SECONDS );
+		} elseif ( $open ) {
+			$out['slug'] = self::MEMBERSHIP_PLAN_PREMIUM_SLUG;
+		}
+
+		return $out;
+	}
+
+	/**
+	 * Give the user their membership (creating it with the combined end date).
+	 * The plan is worked out once and stored, so a retry after a failed email
+	 * reuses the same end date instead of moving it.
+	 *
+	 * @return array Same shape as plan_activation().
+	 */
+	public static function activate_membership( $user_id ) {
+		$stored = get_user_meta( $user_id, self::META_ACTIVATION, true );
+
+		if ( ! is_array( $stored ) || empty( $stored['slug'] ) ) {
+			$stored = self::plan_activation( $user_id );
+			update_user_meta( $user_id, self::META_ACTIVATION, $stored );
+		}
+
+		self::ensure_membership( $user_id, $stored['slug'], $stored['end'] );
+
+		return $stored;
+	}
+
+	/** The stored activation, or false if the user hasn't been activated yet. */
+	public static function get_activation( $user_id ) {
+		$stored = get_user_meta( $user_id, self::META_ACTIVATION, true );
+
+		return ( is_array( $stored ) && ! empty( $stored['slug'] ) ) ? $stored : false;
 	}
 
 	/**

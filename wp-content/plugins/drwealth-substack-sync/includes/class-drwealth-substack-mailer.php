@@ -122,8 +122,13 @@ class DrWealth_Substack_Mailer {
 			return new WP_Error( 'no_user', 'No such user.' );
 		}
 
-		$variant      = self::variant_for_user( $user_id );
-		$raw_body     = self::get_body( $variant );
+		// Work out which email applies from what the user would be activated as, and check
+		// the template BEFORE touching the membership, so a blocked send changes nothing.
+		$plan    = DrWealth_Substack_Subscriber_Importer::get_activation( $user_id );
+		$plan    = $plan ? $plan : DrWealth_Substack_Subscriber_Importer::plan_activation( $user_id );
+		$variant = DrWealth_Substack_Subscriber_Importer::MEMBERSHIP_PLAN_FREE_SLUG === $plan['slug'] ? self::VARIANT_FREE : self::VARIANT_PAID;
+
+		$raw_body = self::get_body( $variant );
 
 		// Safety: never send an email that still contains an unfilled
 		// "[Insert ...]" placeholder (the paid email has one for renewal details).
@@ -131,8 +136,11 @@ class DrWealth_Substack_Mailer {
 			return new WP_Error( 'unfilled_placeholder', 'The ' . $variant . ' email still contains an "[Insert ...]" placeholder. Edit it on the Migration Email tab first.' );
 		}
 
-		$subject = self::render_template( self::get_subject( $variant ), $user );
-		$body    = self::render_template( $raw_body, $user );
+		// Register the membership (combined end date) in the same step as the email.
+		$info = DrWealth_Substack_Subscriber_Importer::activate_membership( $user_id );
+
+		$subject = self::render_template( self::get_subject( $variant ), $user, $info );
+		$body    = self::render_template( $raw_body, $user, $info );
 
 		$sent = self::deliver( $user->user_email, $subject, $body, $subject );
 

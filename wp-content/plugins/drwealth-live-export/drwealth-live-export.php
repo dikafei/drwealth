@@ -113,7 +113,7 @@ function drwealth_export_posts( WP_REST_Request $r ) {
 	$since = (string) $r->get_param( 'since' ); // Only posts published on/after this date (GMT).
 
 	$in = implode( ',', array_fill( 0, count( $types ), '%s' ) );
-	$q  = "SELECT ID FROM {$wpdb->posts} WHERE post_type IN ($in) AND post_status IN ('publish','future','private')";
+	$q  = "SELECT ID FROM {$wpdb->posts} WHERE post_type IN ($in) AND post_status IN ('publish','future','private','draft','pending')";
 	$a  = $types;
 
 	// Explicit list of IDs (used to force a re-sync of particular posts): no cursor.
@@ -123,7 +123,7 @@ function drwealth_export_posts( WP_REST_Request $r ) {
 		$posts = array();
 		foreach ( $want as $pid ) {
 			$p = get_post( $pid );
-			if ( $p && in_array( $p->post_type, $types, true ) && in_array( $p->post_status, array( 'publish', 'future', 'private' ), true ) ) {
+			if ( $p && in_array( $p->post_type, $types, true ) && in_array( $p->post_status, array( 'publish', 'future', 'private', 'draft', 'pending' ), true ) ) {
 				$posts[] = drwealth_export_post( $pid );
 			}
 		}
@@ -137,8 +137,9 @@ function drwealth_export_posts( WP_REST_Request $r ) {
 	}
 
 	if ( '' !== $since ) {
-		$q .= ' AND post_date_gmt >= %s';
-		$a[] = $since;
+		// Drafts have no publish date yet, so they are matched on last-modified instead.
+		$q .= " AND (post_date_gmt >= %s OR (post_status IN ('draft','pending') AND post_modified_gmt >= %s))";
+		array_push( $a, $since, $since );
 	}
 
 	$q .= ' ORDER BY post_modified_gmt ASC, ID ASC LIMIT %d';
@@ -152,6 +153,59 @@ function drwealth_export_posts( WP_REST_Request $r ) {
 	}
 
 	return array( 'posts' => $posts, 'count' => count( $posts ) );
+}
+
+/* ------------------------------------------------------------ TablePress tables */
+
+add_action(
+	'rest_api_init',
+	function () {
+		register_rest_route(
+			'drwealth-sync/v1',
+			'/tables',
+			array(
+				'methods'             => 'GET',
+				'callback'            => 'drwealth_export_tables',
+				'permission_callback' => 'drwealth_export_authorized',
+			)
+		);
+	}
+);
+
+/** Named TablePress tables (ids=13,86,95): name, description, data, options, visibility, plus a hash of those. */
+function drwealth_export_tables( WP_REST_Request $r ) {
+	if ( ! class_exists( 'TablePress' ) ) {
+		return new WP_Error( 'dw_notp', 'TablePress is not active here.', array( 'status' => 404 ) );
+	}
+
+	if ( empty( TablePress::$model_table ) ) {
+		TablePress::$model_table = TablePress::load_model( 'table' );
+	}
+
+	$out = array();
+
+	foreach ( array_filter( array_map( 'sanitize_text_field', explode( ',', (string) $r->get_param( 'ids' ) ) ) ) as $id ) {
+		$t = TablePress::$model_table->load( $id, true, true );
+
+		if ( is_wp_error( $t ) || empty( $t ) ) {
+			$out[] = array( 'id' => (string) $id, 'missing' => true );
+			continue;
+		}
+
+		$core = array(
+			'name'        => $t['name'],
+			'description' => $t['description'],
+			'data'        => $t['data'],
+			'options'     => $t['options'],
+			'visibility'  => $t['visibility'],
+		);
+
+		unset( $core['options']['last_editor'] ); // Who edited it last differs per site: not part of the comparison.
+
+		$out[] = array_merge( array( 'id' => (string) $id, 'last_modified' => isset( $t['last_modified'] ) ? $t['last_modified'] : '' ), $core, array( 'hash' => md5( wp_json_encode( $core ) ) ) );
+	}
+
+	return array( 'tables' => $out );
 }
 
 /** Light index of everything in scope, for audits. */
@@ -211,8 +265,48 @@ function drwealth_export_user( $uid ) {
 		'description'  => $u->description,
 		'url'          => $u->user_url,
 		'role'         => $role,
-		'avatar_url'   => get_avatar_url( $u->ID, array( 'size' => 256, 'default' => '404' ) ),
+		'avatar_url'   => drwealth_export_avatar_url( $u->ID ),
+		'meta'         => drwealth_export_user_meta( $u->ID ),
 	);
+}
+
+/**
+ * Profile meta for a writer account, minus anything private or tied to this site:
+ * sessions, passwords/tokens/keys, capabilities, per-site (table-prefixed) settings,
+ * WooCommerce billing/shipping/session data and avatar attachment IDs (the photo travels separately).
+ */
+function drwealth_export_user_meta( $uid ) {
+	global $wpdb;
+
+	$out = array();
+
+	foreach ( get_user_meta( $uid ) as $k => $vals ) {
+		if ( 0 === strpos( $k, $wpdb->prefix ) || 0 === strpos( $k, 'wp_' ) || 0 === strpos( $k, 'billing_' ) || 0 === strpos( $k, 'shipping_' ) || 0 === strpos( $k, '_woocommerce' ) || 0 === strpos( $k, 'wc_' ) || 0 === strpos( $k, '_dw_' ) ) {
+			continue;
+		}
+
+		if ( preg_match( '/session|password|token|secret|api_?key|capabilit|user_level|avatar|application_passwords|activation|reset|nonce|last_login|dismissed|closedpostboxes|metaboxhidden|meta-box-order/i', $k ) ) {
+			continue;
+		}
+
+		$out[ $k ] = maybe_unserialize( reset( $vals ) );
+	}
+
+	return $out;
+}
+
+/**
+ * The photo visitors actually see. Profile plugins (ProfilePress etc.) swap the picture in the
+ * rendered <img>, not in get_avatar_url(), so read the src from get_avatar() first.
+ */
+function drwealth_export_avatar_url( $uid ) {
+	$html = get_avatar( $uid, 256 );
+
+	if ( $html && preg_match( '/src=(["\'])(.*?)\1/i', $html, $m ) && false === strpos( $m[2], 'gravatar.com' ) && false === strpos( $m[2], 'secure.gravatar' ) ) {
+		return html_entity_decode( $m[2] );
+	}
+
+	return get_avatar_url( $uid, array( 'size' => 256, 'default' => '404' ) );
 }
 
 function drwealth_export_post( $id ) {
