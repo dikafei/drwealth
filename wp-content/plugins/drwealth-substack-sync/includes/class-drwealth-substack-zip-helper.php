@@ -21,8 +21,9 @@ class DrWealth_Substack_Zip_Helper {
 
 		WP_Filesystem();
 
-		$upload_dir = wp_upload_dir();
-		$extract_to = trailingslashit( $upload_dir['basedir'] ) . 'drwealth-substack-tmp/' . uniqid( 'import-' );
+		// The system temp folder, NOT uploads/: files in uploads/ are public on the web
+		// (the export holds the subscriber list), and the temp folder is not.
+		$extract_to = trailingslashit( get_temp_dir() ) . uniqid( 'drwealth-substack-import-' );
 
 		$result = unzip_file( $zip_path, $extract_to );
 

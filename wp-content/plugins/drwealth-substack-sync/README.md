@@ -15,7 +15,14 @@ For each of those rows, the plugin:
 - Finds the matching post HTML in `posts/<post_id>.html` and uses it as the post content (Substack's "Subscribe now" button and paywall marker are stripped since gating happens in WordPress, not in the content).
 - Sets the post title and publish date from the export.
 - Sets the post **author** to the user chosen in the Author dropdown on the form (the export has no author field; the choice is remembered). Without this, WordPress would credit whoever ran the import.
-- Adds a **publication category** — `Finbite Insights` (slug `finbite-insights`) or `Growth Dragons` (slug `growth-dragons`) — created automatically if it doesn't exist yet.
+- **Posts already on the site** (same Substack ID, or same slug as an existing post) are never duplicated: by default they are only linked to their Substack ID and left untouched, categories included. A checkbox on the form overwrites their title/content/date instead; categories are never changed on existing posts.
+- New posts get the Substack slug as their address, so links between posts line up. No visible Finbite Insights / Growth Dragons category is added; the source is kept in post meta only.
+- Rewrites links to `finbiteinsights.substack.com/p/<slug>` and `growthdragons.substack.com/p/<slug>` to the same slug on this site, and removes Mighty Networks links (`dr-wealth.mn.co`) while keeping their text.
+- Strips Substack subscribe, share and "Leave a comment" buttons, subscription boxes and the paywall marker.
+- Saves the Substack subtitle as the Jetpack SEO description (the SEO title is left empty) and leaves the "last updated" date empty.
+- An author must be chosen; the import refuses to run without one.
+- During the import, mail is blocked, Jetpack Publicize is off and calls to Kit/ConvertKit/Mailchimp are blocked, so a post import can't email or post anywhere.
+- The uploaded zip and its extracted files live in the server's private temp folder, not in the public uploads folder.
 - Assigns categories using the site's existing taxonomy (no new categories are created):
   - **Market**: the existing `United States` category (slug `us`) for Finbite Insights, or `China` (slug `cn`) for Growth Dragons.
   - **Paid gating**: the existing `Premium` category (slug `premium`), only for posts where the export's `audience` is `only_paid`. Free (`everyone`) posts get the market category only.

@@ -95,6 +95,9 @@ class DrWealth_Substack_Admin {
 				<strong>Import finished.</strong>
 				Created: <?php echo (int) $result['created']; ?>,
 				Updated: <?php echo (int) $result['updated']; ?>,
+				<?php if ( isset( $result['matched'] ) ) : ?>
+					Already on the site (left as is): <?php echo count( $result['matched'] ); ?>,
+				<?php endif; ?>
 				Skipped: <?php echo count( $result['skipped'] ); ?>,
 				Errors: <?php echo count( $result['errors'] ); ?>
 			</p>
@@ -171,7 +174,14 @@ class DrWealth_Substack_Admin {
 					<th><label for="drwealth_limit">Number of posts to import</label></th>
 					<td>
 						<input type="number" name="limit" id="drwealth_limit" value="10" min="1" max="500" />
-						<p class="description">First N published posts in the file, top to bottom. Re-importing the same posts overwrites them instead of duplicating them.</p>
+						<p class="description">First N published posts in the file, top to bottom. A post that is already on the site (same Substack ID or same slug) is never duplicated and keeps its categories.</p>
+					</td>
+				</tr>
+				<tr>
+					<th>Posts already on the site</th>
+					<td>
+						<label><input type="checkbox" name="overwrite_existing" value="1" /> Also overwrite the title, content and date of posts that are already on the site</label>
+						<p class="description">Off by default: those posts are only linked to their Substack ID and left untouched. Categories are never changed on existing posts.</p>
 					</td>
 				</tr>
 			</table>
@@ -491,7 +501,8 @@ class DrWealth_Substack_Admin {
 			);
 		}
 
-		$result = DrWealth_Substack_Importer::import_zip( $uploaded, $publication, $limit, $author_id );
+		$overwrite = ! empty( $_POST['overwrite_existing'] );
+		$result    = DrWealth_Substack_Importer::import_zip( $uploaded, $publication, $limit, $author_id, $overwrite );
 
 		if ( file_exists( $uploaded ) ) {
 			wp_delete_file( $uploaded );
@@ -664,18 +675,26 @@ class DrWealth_Substack_Admin {
 
 		require_once ABSPATH . 'wp-admin/includes/file.php';
 
-		$overrides = array(
-			'test_form' => false,
-			'mimes'     => array( 'zip' => 'application/zip' ),
-		);
+		// Keep the export OUT of the public uploads folder (it contains the subscriber list):
+		// move it to a private temp file instead of using wp_handle_upload().
+		$name = sanitize_file_name( wp_unslash( $_FILES[ $field ]['name'] ) );
+		$tmp  = $_FILES[ $field ]['tmp_name']; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
 
-		$uploaded = wp_handle_upload( $_FILES[ $field ], $overrides );
-
-		if ( isset( $uploaded['error'] ) ) {
-			return new WP_Error( 'upload_failed', $uploaded['error'] );
+		if ( 'zip' !== strtolower( pathinfo( $name, PATHINFO_EXTENSION ) ) ) {
+			return new WP_Error( 'upload_failed', 'Please upload the Substack export as a .zip file.' );
 		}
 
-		return $uploaded['file'];
+		if ( ! is_uploaded_file( $tmp ) ) {
+			return new WP_Error( 'upload_failed', 'The upload did not complete. Please try again.' );
+		}
+
+		$dest = wp_tempnam( $name );
+
+		if ( ! $dest || ! move_uploaded_file( $tmp, $dest ) ) {
+			return new WP_Error( 'upload_failed', 'Could not store the upload in the temp folder.' );
+		}
+
+		return $dest;
 	}
 
 	protected static function redirect_with_result( $transient_key, $query_tab, $result ) {

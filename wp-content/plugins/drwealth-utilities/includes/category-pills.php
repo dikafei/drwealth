@@ -14,16 +14,44 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-/** category slug => pill modifier class. Colours live in the CSS below. */
+/**
+ * Alvin decided the Finbite Insights / Growth Dragons names are not shown to readers, so
+ * the coloured pills are OFF by default (return the old array from this filter to bring
+ * them back) and those two categories are hidden from the category lines on the site.
+ * The categories themselves stay on the posts that have them (only their display is hidden).
+ *
+ * category slug => pill modifier class. Colours live in the CSS below.
+ */
 function drwealth_pills_map() {
-	return apply_filters(
-		'drwealth_category_pills',
-		array(
-			'finbite-insights' => 'dw-pill--finbite',
-			'growth-dragons'   => 'dw-pill--growth',
-		)
-	);
+	return apply_filters( 'drwealth_category_pills', array() );
 }
+
+/** Category slugs never shown to readers on the front end. */
+function drwealth_hidden_category_slugs() {
+	return apply_filters( 'drwealth_hidden_categories', array( 'finbite-insights', 'growth-dragons' ) );
+}
+
+add_filter(
+	'get_the_terms',
+	function ( $terms, $post_id, $taxonomy ) {
+		if ( 'category' !== $taxonomy || is_admin() || ( defined( 'REST_REQUEST' ) && REST_REQUEST ) || ! is_array( $terms ) ) {
+			return $terms;
+		}
+
+		$hidden = drwealth_hidden_category_slugs();
+
+		return array_values(
+			array_filter(
+				$terms,
+				function ( $term ) use ( $hidden ) {
+					return ! ( $term instanceof WP_Term ) || ! in_array( $term->slug, $hidden, true );
+				}
+			)
+		);
+	},
+	10,
+	3
+);
 
 add_action(
 	'wp_head',
