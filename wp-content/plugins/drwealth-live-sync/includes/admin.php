@@ -267,6 +267,27 @@ dw_sync_action(
 );
 
 dw_sync_action(
+	'dw_sync_idblock_check',
+	function () {
+		$s = dw_sync_idblock_status();
+
+		return sprintf(
+			'ID block (read only): highest post ID on staging %d; the next new post or image will get ID %d. %s',
+			$s['max'],
+			$s['next'],
+			$s['reserved'] ? 'A block is already reserved at #' . $s['reserved'] . '.' : 'No block reserved yet.'
+		);
+	}
+);
+
+dw_sync_action(
+	'dw_sync_idblock_reserve',
+	function () {
+		return dw_sync_idblock_reserve( 147000000 );
+	}
+);
+
+dw_sync_action(
 	'dw_sync_sitemap_now',
 	function () {
 		if ( ! class_exists( 'Jetpack_Sitemap_Manager' ) ) {
@@ -541,7 +562,42 @@ dw_sync_action(
 	}
 );
 
+/**
+ * Buttons for one-off jobs that are finished (ID fix, ID block, full re-check, subscriber
+ * clean-up). They still work; they are just not shown. Show them again with:
+ *   add_filter( 'drwealth_sync_show_all_buttons', '__return_true' );
+ */
+function dw_sync_retired_actions() {
+	return array(
+		'dw_sync_preview',
+		'dw_sync_reset',
+		'dw_sync_reid_check',
+		'dw_sync_reid_clear',
+		'dw_sync_reid_run',
+		'dw_sync_idblock_check',
+		'dw_sync_idblock_reserve',
+		'dw_sync_subs_check',
+		'dw_sync_subs_inspect',
+		'dw_sync_subs_delete',
+		'dw_sync_audit',
+		'dw_sync_tables_check',
+		'dw_sync_tables_copy',
+		'dw_sync_drafts_check',
+		'dw_sync_drafts_compare',
+		'dw_sync_drafts_import',
+		'dw_sync_sitemap_now',
+		'dw_sync_rollout_audit',
+		'dw_sync_author_photos',
+		'dw_sync_removed_check',
+		'dw_sync_removed_apply',
+	);
+}
+
 function dw_sync_button( $action, $label, $primary = false, $confirm = '' ) {
+	if ( in_array( $action, dw_sync_retired_actions(), true ) && ! apply_filters( 'drwealth_sync_show_all_buttons', false ) ) {
+		return;
+	}
+
 	?>
 	<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline"<?php echo $confirm ? ' onsubmit="return confirm(' . esc_attr( wp_json_encode( $confirm ) ) . ');"' : ''; ?>>
 		<input type="hidden" name="action" value="<?php echo esc_attr( $action ); ?>" />
@@ -644,6 +700,8 @@ function dw_sync_render() {
 			dw_sync_button( 'dw_sync_reid_check', 'ID fix: check' );
 			dw_sync_button( 'dw_sync_reid_clear', 'ID fix: free revisions/trash/sitemap', false, 'PERMANENTLY delete old revisions, already-trashed posts and Jetpack cached sitemap files that are holding live IDs? (Jetpack rebuilds the sitemaps.) Orders, memberships, images and everything else are left alone.' );
 			dw_sync_button( 'dw_sync_reid_run', 'ID fix: run', false, 'Re-create the posts whose ID differs from live, using the live ID? Each old copy is only deleted after its replacement is created with the right ID (otherwise it is restored). Batches of ~25 seconds.' );
+			dw_sync_button( 'dw_sync_idblock_check', 'ID block: check' );
+			dw_sync_button( 'dw_sync_idblock_reserve', 'ID block: reserve (before Substack import)', false, 'Move staging\'s ID counter up to 147,000,000 by creating one hidden placeholder post? Everything the Substack import creates will then get IDs above anything live will use. Nothing existing changes.' );
 			dw_sync_button( 'dw_sync_sitemap_now', 'Sitemap: rebuild now' );
 			dw_sync_button( 'dw_sync_rollout_audit', 'Roll-out audit' );
 			dw_sync_button( 'dw_sync_author_photos', 'Sync author profiles' );

@@ -1559,6 +1559,68 @@ function dw_sync_reid_clear() {
 }
 
 
+/**
+ * ID block for the Substack import.
+ *
+ * Live and staging each hand out post IDs from their own counter, and the final catch-up copies live-only
+ * posts onto staging with live's exact IDs. If the Substack import (posts + downloaded images, which are
+ * posts too) used the IDs live is about to hand out, those copies would collide. Reserving a block far above
+ * both sites moves staging's counter there, so everything the import creates lands in a range live won't reach.
+ *
+ * @return array{max:int,next:int,reserved:int}
+ */
+function dw_sync_idblock_status() {
+	global $wpdb;
+
+	$status = $wpdb->get_row( $wpdb->prepare( 'SHOW TABLE STATUS LIKE %s', $wpdb->posts ) ); // phpcs:ignore WordPress.DB
+
+	return array(
+		'max'      => (int) $wpdb->get_var( "SELECT MAX(ID) FROM {$wpdb->posts}" ), // phpcs:ignore WordPress.DB
+		'next'     => $status && isset( $status->Auto_increment ) ? (int) $status->Auto_increment : 0,
+		'reserved' => (int) get_option( 'dw_sync_id_block', 0 ),
+	);
+}
+
+/**
+ * Move the posts-table counter to $start by creating one hidden placeholder post with that exact ID.
+ * (A placeholder, not just ALTER TABLE, so the counter can't fall back after a database restart.)
+ *
+ * @return string Human-readable result.
+ */
+function dw_sync_idblock_reserve( $start = 147000000 ) {
+	$start = (int) $start;
+	$s     = dw_sync_idblock_status();
+
+	if ( $s['reserved'] ) {
+		return sprintf( 'Already reserved: placeholder #%d. Next ID is %d.', $s['reserved'], $s['next'] );
+	}
+
+	if ( $s['max'] >= $start || $s['next'] >= $start ) {
+		return sprintf( 'Not needed: staging is already at or above %d (highest ID %d, next %d).', $start, $s['max'], $s['next'] );
+	}
+
+	$id = wp_insert_post(
+		array(
+			'import_id'   => $start,
+			'post_type'   => 'dw_id_reserve',
+			'post_status' => 'private',
+			'post_title'  => 'ID block placeholder (do not delete)',
+		),
+		true
+	);
+
+	if ( is_wp_error( $id ) || (int) $id !== $start ) {
+		return 'Could not create the placeholder: ' . ( is_wp_error( $id ) ? $id->get_error_message() : 'got ID ' . (int) $id );
+	}
+
+	update_option( 'dw_sync_id_block', $start, false );
+	dw_sync_log( 'info', 0, $start, 'Reserved ID block: placeholder created at #' . $start . '.' );
+
+	$s = dw_sync_idblock_status();
+
+	return sprintf( 'Reserved. Placeholder #%d created; the next new post or image will get ID %d.', $start, $s['next'] );
+}
+
 /** Ask Jetpack to rebuild its sitemaps in the background (it keeps them as cached files). */
 function dw_sync_sitemap_rebuild() {
 	if ( ! class_exists( 'Jetpack_Sitemap_Manager' ) ) {

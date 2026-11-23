@@ -448,7 +448,13 @@ class DrWealth_Substack_Subscriber_Importer {
 			$login = $base_login . $i;
 		}
 
-		return wp_insert_user(
+		// Creating a user fires user_register, and the site's code snippet tags every new user
+		// in Kit on that hook. Block Kit/Mailchimp calls while the user is created.
+		$block = array( 'DrWealth_Substack_Importer', 'block_marketing_requests' );
+
+		add_filter( 'pre_http_request', $block, 9999, 3 );
+
+		$user_id = wp_insert_user(
 			array(
 				'user_login' => $login,
 				'user_email' => $email,
@@ -456,6 +462,10 @@ class DrWealth_Substack_Subscriber_Importer {
 				'role'       => 'customer',
 			)
 		);
+
+		remove_filter( 'pre_http_request', $block, 9999 );
+
+		return $user_id;
 	}
 
 	/**

@@ -127,6 +127,104 @@ class DrWealth_Substack_Zip_Helper {
 	}
 
 	/**
+	 * Substack export files left behind in the PUBLIC uploads folder (by older versions of the
+	 * importer): the old temp folder, any .zip that holds posts.csv / email_list*.csv, and loose
+	 * posts.csv / email_list*.csv files. New imports never put anything there.
+	 *
+	 * @return string[] Absolute paths (files and the old temp folder).
+	 */
+	public static function find_leftovers() {
+		$upload = wp_get_upload_dir();
+		$base   = untrailingslashit( $upload['basedir'] );
+		$tmp    = $base . '/drwealth-substack-tmp';
+		$found  = array();
+
+		if ( is_dir( $tmp ) ) {
+			$found[] = $tmp;
+		}
+
+		if ( ! is_dir( $base ) ) {
+			return $found;
+		}
+
+		$zips     = 0;
+		$iterator = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $base, FilesystemIterator::SKIP_DOTS ) );
+
+		foreach ( $iterator as $file ) {
+			if ( ! $file->isFile() ) {
+				continue;
+			}
+
+			$path = $file->getPathname();
+
+			if ( 0 === strpos( $path, $tmp . '/' ) ) {
+				continue; // Covered by the folder itself.
+			}
+
+			$name = strtolower( $file->getFilename() );
+			$ext  = pathinfo( $name, PATHINFO_EXTENSION );
+
+			if ( 'csv' === $ext && ( 'posts.csv' === $name || 0 === strpos( $name, 'email_list' ) ) ) {
+				$found[] = $path;
+				continue;
+			}
+
+			if ( 'zip' === $ext && ++$zips <= 300 && class_exists( 'ZipArchive' ) ) {
+				$zip = new ZipArchive();
+
+				if ( true === $zip->open( $path ) ) {
+					$hit = false;
+					$max = min( $zip->numFiles, 5000 );
+
+					for ( $i = 0; $i < $max; $i++ ) {
+						$entry = strtolower( basename( (string) $zip->getNameIndex( $i ) ) );
+
+						if ( 'posts.csv' === $entry || 0 === strpos( $entry, 'email_list' ) ) {
+							$hit = true;
+							break;
+						}
+					}
+
+					$zip->close();
+
+					if ( $hit ) {
+						$found[] = $path;
+					}
+				}
+			}
+		}
+
+		return $found;
+	}
+
+	/**
+	 * Delete everything find_leftovers() reports (it is re-run here, never a caller-supplied path).
+	 *
+	 * @return int Number of items deleted.
+	 */
+	public static function delete_leftovers() {
+		global $wp_filesystem;
+
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+		WP_Filesystem();
+
+		$deleted = 0;
+
+		foreach ( self::find_leftovers() as $path ) {
+			if ( is_dir( $path ) ) {
+				if ( $wp_filesystem && $wp_filesystem->delete( $path, true ) ) {
+					$deleted++;
+				}
+			} elseif ( file_exists( $path ) ) {
+				wp_delete_file( $path );
+				$deleted++;
+			}
+		}
+
+		return $deleted;
+	}
+
+	/**
 	 * Remove a temporary extraction directory.
 	 */
 	public static function cleanup( $dir ) {

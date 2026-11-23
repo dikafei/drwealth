@@ -77,6 +77,10 @@ class DrWealth_Substack_Importer {
 			return $result;
 		}
 
+		// Everything this run CREATES (posts and downloaded images) is tagged with this ID so
+		// the run can be undone later (Member Tools > Posts > Undo an import run).
+		self::$run_id = gmdate( 'Ymd-His' );
+
 		self::begin_import_guards();
 
 		try {
@@ -88,6 +92,57 @@ class DrWealth_Substack_Importer {
 
 	/** True while a post import is running (other code, e.g. snippets, can check this). */
 	public static $importing = false;
+
+	/** ID of the current import run (set at the start of import_zip). */
+	public static $run_id = '';
+
+	/** ID of the post the last import_row() created, updated or matched (0 if none). */
+	public static $last_id = 0;
+
+	/**
+	 * Import ONE post sent by the browser (batch import): the page reads the export .zip in the
+	 * browser and sends each post separately, so nothing large is uploaded and each request is short.
+	 *
+	 * @param array  $row             post_id, post_date, audience, title, subtitle (from posts.csv).
+	 * @param string $html            The post's HTML from posts/<post_id>.html.
+	 * @param string $publication_key Key from self::PUBLICATIONS.
+	 * @param int    $author_id       Author for new posts.
+	 * @param bool   $overwrite       Overwrite posts that are already on the site.
+	 * @param string $run_id          Run ID (date-time) the browser generated for this batch.
+	 * @return array{outcome:string,id:int,error:string}
+	 */
+	public static function import_one( array $row, $html, $publication_key, $author_id, $overwrite, $run_id ) {
+		if ( ! isset( self::PUBLICATIONS[ $publication_key ] ) ) {
+			return array( 'outcome' => 'error', 'id' => 0, 'error' => 'Unknown publication.' );
+		}
+
+		if ( $author_id <= 0 || ! get_userdata( $author_id ) ) {
+			return array( 'outcome' => 'error', 'id' => 0, 'error' => 'Choose an author.' );
+		}
+
+		require_once ABSPATH . 'wp-admin/includes/media.php';
+		require_once ABSPATH . 'wp-admin/includes/image.php';
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+
+		self::$run_id = preg_replace( '/[^0-9-]/', '', (string) $run_id );
+
+		self::begin_import_guards();
+
+		try {
+			$outcome = self::import_row( $row, $publication_key, '', (int) $author_id, (bool) $overwrite, (string) $html );
+		} finally {
+			self::end_import_guards();
+		}
+
+		if ( is_wp_error( $outcome ) ) {
+			return array( 'outcome' => 'error', 'id' => 0, 'error' => $outcome->get_error_message() );
+		}
+
+		return array( 'outcome' => (string) $outcome, 'id' => (int) self::$last_id, 'error' => '' );
+	}
+
+	/** Post/attachment meta: the run that created this item. */
+	const META_RUN = '_drwealth_substack_run';
 
 	/**
 	 * A post import must never email anyone, post to social, or reach Kit. Mail is swallowed,
@@ -194,7 +249,9 @@ class DrWealth_Substack_Importer {
 	 *
 	 * @return string|WP_Error 'created', 'updated', 'skipped', or a WP_Error on failure.
 	 */
-	protected static function import_row( array $row, $publication_key, $posts_dir, $author_id = 0, $overwrite = false ) {
+	protected static function import_row( array $row, $publication_key, $posts_dir, $author_id = 0, $overwrite = false, $html = null ) {
+
+		self::$last_id = 0;
 
 		$substack_id = trim( isset( $row['post_id'] ) ? $row['post_id'] : '' );
 
@@ -204,12 +261,18 @@ class DrWealth_Substack_Importer {
 
 		$html_path = trailingslashit( $posts_dir ) . $substack_id . '.html';
 
-		if ( ! file_exists( $html_path ) ) {
+		// $html is given when the browser sends the post directly (batch import); otherwise read it from the extracted export.
+		if ( null === $html && ! file_exists( $html_path ) ) {
 			return 'skipped';
 		}
 
-		$slug        = self::slug_from_id( $substack_id );
-		$existing_id = self::find_existing_post( $substack_id, $publication_key, $slug );
+		$slug = self::slug_from_id( $substack_id );
+
+		// For matching an older copy of the same article by title + date.
+		$match_title = sanitize_text_field( html_entity_decode( isset( $row['title'] ) ? $row['title'] : '', ENT_QUOTES ) );
+		$match_date  = ! empty( $row['post_date'] ) ? gmdate( 'Y-m-d H:i:s', (int) strtotime( $row['post_date'] ) ) : '';
+
+		$existing_id = self::find_existing_post( $substack_id, $publication_key, $slug, $match_title, $match_date );
 
 		// A post that is already on the site (same Substack ID, or same slug as one already
 		// there): never create a "-2" duplicate and never touch its categories. By default it
@@ -220,10 +283,12 @@ class DrWealth_Substack_Importer {
 				update_post_meta( $existing_id, self::META_PUBLICATION, $publication_key );
 			}
 
+			self::$last_id = (int) $existing_id;
+
 			return 'matched';
 		}
 
-		$raw_html = file_get_contents( $html_path );
+		$raw_html = ( null !== $html ) ? $html : file_get_contents( $html_path );
 		$content  = self::clean_content( $raw_html );
 		$title    = sanitize_text_field( html_entity_decode( isset( $row['title'] ) ? $row['title'] : $substack_id, ENT_QUOTES ) );
 
@@ -279,6 +344,7 @@ class DrWealth_Substack_Importer {
 
 		// Categories are only set on a brand-new post; an existing one keeps its own.
 		if ( $is_new ) {
+			update_post_meta( $new_id, self::META_RUN, self::$run_id );
 			wp_set_post_categories( $new_id, $category_ids, false );
 
 			// Imported posts have no "last updated" date: the publish date is the Substack date.
@@ -317,6 +383,8 @@ class DrWealth_Substack_Importer {
 				self::maybe_set_featured_image( $new_id, $raw_html );
 			}
 		}
+
+		self::$last_id = (int) $new_id;
 
 		$result = $is_new ? 'created' : 'updated';
 
@@ -406,6 +474,135 @@ class DrWealth_Substack_Importer {
 			'content'  => $content,
 			'first_id' => $first_id,
 		);
+	}
+
+	/* ------------------------------------------------------------ Re-clean (no re-import needed) */
+
+	/**
+	 * Posts that still carry something the importer should have cleaned:
+	 *  - a link to a newsletter post on substack.com        (any post)
+	 *  - a Mighty Networks link (dr-wealth.mn.co)            (any post)
+	 *  - a Substack CDN / S3 image URL (hrefs, embedded cards) (posts the import created)
+	 *
+	 * @return int[] Post IDs.
+	 */
+	public static function reclean_candidates() {
+		global $wpdb;
+
+		$ids = $wpdb->get_col( // phpcs:ignore WordPress.DB
+			"SELECT ID FROM {$wpdb->posts}
+			WHERE post_type = 'post' AND post_status NOT IN ('trash','auto-draft')
+			AND ( post_content LIKE '%substack.com/p/%' OR post_content LIKE '%dr-wealth.mn.co%'
+				OR post_content LIKE '%substackcdn.com%' OR post_content LIKE '%substack-post-media%' )
+			ORDER BY ID"
+		);
+
+		$out = array();
+
+		foreach ( $ids as $id ) {
+			if ( self::reclean_content( (int) $id, get_post_field( 'post_content', $id ), false ) !== get_post_field( 'post_content', $id ) ) {
+				$out[] = (int) $id;
+			}
+		}
+
+		return $out;
+	}
+
+	/**
+	 * The cleaned content of a post. With $download false, image URLs are left as they are
+	 * (used to find which posts would change without downloading anything).
+	 */
+	protected static function reclean_content( $post_id, $content, $download ) {
+		$created = 'created' === get_post_meta( $post_id, DRWEALTH_SUBSTACK_ORIGIN_META, true );
+
+		// Links to newsletter posts anywhere in the content (including embedded post cards) -> same slug on this site.
+		$content = preg_replace_callback(
+			'#https?://(?:www\.)?(?:finbiteinsights|growthdragons)\.substack\.com/p/([a-z0-9-]+)[^"\'\s<>&]*#i',
+			function ( $m ) {
+				return home_url( '/' . strtolower( $m[1] ) . '/' );
+			},
+			$content
+		);
+
+		// Mighty Networks community links: remove the link, keep the text.
+		$content = preg_replace( '#<a\b[^>]*\bhref="https?://dr-wealth\.mn\.co[^"]*"[^>]*>(.*?)</a>#is', '$1', $content );
+
+		if ( ! $created || ! $download ) {
+			if ( $created && ! $download && preg_match( '#substackcdn\.com|substack-post-media#i', $content ) ) {
+				// Detection only: mark the content as "would change" (never saved).
+				return $content . '<!--dw-reclean-images-->';
+			}
+
+			return $content;
+		}
+
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+		require_once ABSPATH . 'wp-admin/includes/media.php';
+		require_once ABSPATH . 'wp-admin/includes/image.php';
+
+		$cache = array();
+
+		return preg_replace_callback(
+			'#https?://(?:substackcdn\.com/image/fetch/[^"\'\s<>&)]+|[a-z0-9.-]*substack[a-z0-9.-]*\.amazonaws\.com/[^"\'\s<>&)]+)#i',
+			function ( $m ) use ( $post_id, &$cache ) {
+				$url = $m[0];
+
+				if ( isset( $cache[ $url ] ) ) {
+					return $cache[ $url ];
+				}
+
+				$original = $url;
+
+				if ( preg_match( '#substackcdn\.com/image/fetch/[^/]*/(https?%3A.+)$#i', $url, $o ) ) {
+					$original = rawurldecode( $o[1] );
+				}
+
+				$attachment_id = self::sideload_once( esc_url_raw( $original ), $post_id );
+				$cache[ $url ] = $attachment_id ? wp_get_attachment_url( $attachment_id ) : $url;
+
+				return $cache[ $url ];
+			},
+			$content
+		);
+	}
+
+	/**
+	 * Clean the posts found by reclean_candidates(). Writes post_content straight to the
+	 * database so the modified date, revisions and save hooks are not touched.
+	 *
+	 * @return array{changed:int, left:int, found:int}
+	 */
+	public static function reclean_run( $apply, $deadline = 0 ) {
+		global $wpdb;
+
+		$ids     = self::reclean_candidates();
+		$changed = 0;
+
+		if ( ! $apply ) {
+			return array( 'changed' => 0, 'left' => count( $ids ), 'found' => count( $ids ) );
+		}
+
+		self::$run_id = '';
+		self::begin_import_guards();
+
+		foreach ( $ids as $id ) {
+			if ( $deadline && time() > $deadline ) {
+				break;
+			}
+
+			$old = get_post_field( 'post_content', $id );
+			$new = self::reclean_content( $id, $old, true );
+
+			if ( $new !== $old ) {
+				$wpdb->update( $wpdb->posts, array( 'post_content' => $new ), array( 'ID' => $id ) ); // phpcs:ignore WordPress.DB
+				clean_post_cache( $id );
+				$changed++;
+			}
+		}
+
+		self::end_import_guards();
+
+		return array( 'changed' => $changed, 'left' => count( self::reclean_candidates() ), 'found' => count( $ids ) );
 	}
 
 	/**
@@ -502,6 +699,15 @@ class DrWealth_Substack_Importer {
 
 		$name = sanitize_file_name( basename( wp_parse_url( $url, PHP_URL_PATH ) ) );
 
+		// Substack sometimes serves images as "*.bin" (WordPress refuses that): name the file after what it really is.
+		$info = function_exists( 'wp_getimagesize' ) ? wp_getimagesize( $tmp ) : false;
+
+		if ( $info && ! empty( $info['mime'] ) && ! preg_match( '/\.(jpe?g|png|gif|webp|avif)$/i', $name ) ) {
+			$ext  = ltrim( (string) image_type_to_extension( $info[2] ), '.' );
+			$ext  = 'jpeg' === $ext ? 'jpg' : $ext;
+			$name = ( preg_replace( '/\.[a-z0-9]+$/i', '', $name ) ?: 'substack-image' ) . '.' . ( $ext ?: 'jpg' );
+		}
+
 		$id = media_handle_sideload(
 			array(
 				'name'     => $name ? $name : 'substack-image.jpg',
@@ -519,6 +725,10 @@ class DrWealth_Substack_Importer {
 
 		update_post_meta( $id, self::META_IMAGE_SOURCE, $url );
 
+		if ( self::$run_id ) {
+			update_post_meta( $id, self::META_RUN, self::$run_id ); // Created by this run (so it can be undone).
+		}
+
 		return (int) $id;
 	}
 
@@ -529,7 +739,76 @@ class DrWealth_Substack_Importer {
 	 *
 	 * @return int Post ID, or 0 if none found.
 	 */
-	protected static function find_existing_post( $substack_id, $publication_key, $slug = '' ) {
+	/**
+	 * Find an older post that is the same article as a Substack one, when the slug alone does not match.
+	 * Skips posts created by an import run (those are the new copies) and $exclude.
+	 *
+	 * 1. Slug prefix: the old slug starts with Substack's (truncated) slug, published within 3 days.
+	 * 2. Same title (ignoring case, punctuation and HTML entities), published within 1 day.
+	 *
+	 * @param string $title     Post title.
+	 * @param string $post_date Site-local publish date (Y-m-d H:i:s).
+	 * @param string $slug      Substack slug (post name).
+	 * @param int    $exclude   Post ID to ignore.
+	 * @return int Post ID or 0.
+	 */
+	public static function find_match_by_content( $title, $post_date, $slug, $exclude = 0 ) {
+		global $wpdb;
+
+		$ts = $post_date ? strtotime( $post_date ) : false;
+
+		if ( ! $ts ) {
+			return 0;
+		}
+
+		$statuses = "('publish','future','draft','pending','private')";
+		$not_run  = $wpdb->prepare( "NOT EXISTS (SELECT 1 FROM {$wpdb->postmeta} m WHERE m.post_id = p.ID AND m.meta_key = %s)", self::META_RUN ); // phpcs:ignore WordPress.DB
+
+		if ( '' !== (string) $slug ) {
+			$id = $wpdb->get_var( // phpcs:ignore WordPress.DB
+				$wpdb->prepare(
+					"SELECT p.ID FROM {$wpdb->posts} p WHERE p.post_type = 'post' AND p.post_status IN $statuses AND p.post_name LIKE %s AND p.post_date BETWEEN %s AND %s AND p.ID <> %d AND $not_run ORDER BY p.ID ASC LIMIT 1", // phpcs:ignore WordPress.DB
+					$wpdb->esc_like( $slug ) . '%',
+					gmdate( 'Y-m-d H:i:s', $ts - 3 * DAY_IN_SECONDS ),
+					gmdate( 'Y-m-d H:i:s', $ts + 3 * DAY_IN_SECONDS ),
+					(int) $exclude
+				)
+			);
+
+			if ( $id ) {
+				return (int) $id;
+			}
+		}
+
+		if ( '' === trim( (string) $title ) ) {
+			return 0;
+		}
+
+		$norm = function ( $s ) {
+			return trim( preg_replace( '/[^a-z0-9]+/', ' ', strtolower( html_entity_decode( wp_strip_all_tags( (string) $s ), ENT_QUOTES, 'UTF-8' ) ) ) );
+		};
+
+		$want = $norm( $title );
+
+		$rows = $wpdb->get_results( // phpcs:ignore WordPress.DB
+			$wpdb->prepare(
+				"SELECT p.ID, p.post_title FROM {$wpdb->posts} p WHERE p.post_type = 'post' AND p.post_status IN $statuses AND p.post_date BETWEEN %s AND %s AND p.ID <> %d AND $not_run ORDER BY p.ID ASC", // phpcs:ignore WordPress.DB
+				gmdate( 'Y-m-d H:i:s', $ts - DAY_IN_SECONDS ),
+				gmdate( 'Y-m-d H:i:s', $ts + DAY_IN_SECONDS ),
+				(int) $exclude
+			)
+		);
+
+		foreach ( (array) $rows as $row ) {
+			if ( '' !== $want && $norm( $row->post_title ) === $want ) {
+				return (int) $row->ID;
+			}
+		}
+
+		return 0;
+	}
+
+	protected static function find_existing_post( $substack_id, $publication_key, $slug = '', $title = '', $post_date = '' ) {
 		$existing = get_posts(
 			array(
 				'post_type'      => 'post',
@@ -552,6 +831,17 @@ class DrWealth_Substack_Importer {
 
 		if ( ! empty( $existing ) ) {
 			return (int) $existing[0];
+		}
+
+		// Posts from the first (earlier) import have longer slugs than Substack's (WordPress built
+		// them from the full title), so an exact slug match misses them. Also match on the slug
+		// prefix or on the same title + date.
+		if ( '' !== (string) $title || '' !== $slug ) {
+			$by_content = self::find_match_by_content( $title, $post_date, $slug, 0 );
+
+			if ( $by_content ) {
+				return $by_content;
+			}
 		}
 
 		// Not imported before: is there already a post with this slug (e.g. from the earlier
@@ -738,6 +1028,10 @@ class DrWealth_Substack_Importer {
 		$image_id  = media_sideload_image( $image_url, $post_id, null, 'id' );
 
 		if ( ! is_wp_error( $image_id ) ) {
+			if ( self::$run_id ) {
+				update_post_meta( $image_id, self::META_RUN, self::$run_id );
+			}
+
 			set_post_thumbnail( $post_id, $image_id );
 		}
 	}

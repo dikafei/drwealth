@@ -20,7 +20,9 @@ For each of those rows, the plugin:
 - Rewrites links to `finbiteinsights.substack.com/p/<slug>` and `growthdragons.substack.com/p/<slug>` to the same slug on this site, and removes Mighty Networks links (`dr-wealth.mn.co`) while keeping their text.
 - Strips Substack subscribe, share and "Leave a comment" buttons, subscription boxes and the paywall marker.
 - Saves the Substack subtitle as the Jetpack SEO description (the SEO title is left empty) and leaves the "last updated" date empty.
+- **Batch import (Posts tab):** pick the export .zip and it is read in the browser (JSZip from cdnjs); nothing is uploaded and each post is sent to the site on its own request (`wp_ajax_drwealth_substack_import_one`), so there are no timeouts, with a progress bar, Stop, and "skip the first N / import N" options. Re-running is safe: posts already imported are recognised and left as they are. The older single-request form below it is only for small tests.
 - An author must be chosen; the import refuses to run without one.
+- Every post and downloaded image an import **creates** is tagged with that run's ID (`_drwealth_substack_run`, a date-time). **Posts tab > Undo an import run** lists the runs and permanently deletes what a run created (posts marked `created` and the images it downloaded, in short batches; click again if some are left). Posts that were already on the site are never touched. Undo the newest run first, because a later run can reuse an earlier run's images. Deleting posts does not give their IDs back.
 - During the import, mail is blocked, Jetpack Publicize is off and calls to Kit/ConvertKit/Mailchimp are blocked, so a post import can't email or post anywhere.
 - The uploaded zip and its extracted files live in the server's private temp folder, not in the public uploads folder.
 - Assigns categories using the site's existing taxonomy (no new categories are created):

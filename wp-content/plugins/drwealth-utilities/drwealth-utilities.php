@@ -21,3 +21,4 @@ require_once DRWEALTH_UTILITIES_DIR . 'includes/register-link.php';
 require_once DRWEALTH_UTILITIES_DIR . 'includes/force-public.php';
 require_once DRWEALTH_UTILITIES_DIR . 'includes/header-status-pill.php';
 require_once DRWEALTH_UTILITIES_DIR . 'includes/signup-consent.php';
+require_once DRWEALTH_UTILITIES_DIR . 'includes/post-source.php';
